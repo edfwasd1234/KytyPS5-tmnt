@@ -7,7 +7,9 @@
 
 #include <array>
 #include <atomic>
+#include <cinttypes>
 #include <cstdint>
+#include <cstdlib>
 #include <cstring>
 #include <filesystem>
 #include <string>
@@ -157,6 +159,21 @@ void RenderDocInit() {
 		return;
 	}
 
+	// A portable (zip) RenderDoc does not create the registry entry the installer does, so allow
+	// the library to be pointed at explicitly.
+	if (const char* env_dll = std::getenv("KYTY_RENDERDOC_DLL"); env_dll != nullptr) {
+		auto* env_module = LoadLibraryA(env_dll);
+		if (env_module == nullptr) {
+			LOGF("RenderDoc: KYTY_RENDERDOC_DLL=%s could not be loaded\n", env_dll);
+			return;
+		}
+		if (!BindRenderDocApi(env_module)) {
+			LOGF("RenderDoc: API 1.4.2 is not available in %s; in-app capture disabled\n", env_dll);
+			FreeLibrary(env_module);
+		}
+		return;
+	}
+
 	HKEY h_reg_key;
 	LONG result = RegOpenKeyExW(HKEY_LOCAL_MACHINE,
 	                            L"SOFTWARE\\Classes\\RenderDoc.RDCCapture.1\\DefaultIcon\\", 0,
@@ -243,6 +260,22 @@ static void LogNewestCapture() {
 void RenderDocOnPresent() {
 	if (!IsAvailable()) {
 		return;
+	}
+
+	// Optional unattended capture: KYTY_RENDERDOC_CAPTURE_FRAME=<n> requests a capture once the
+	// given number of frames have been presented, so a capture can be taken without the F1 key
+	// (the capture hotkey needs foreground focus, which a scripted run cannot rely on).
+	{
+		static const char*    env   = std::getenv("KYTY_RENDERDOC_CAPTURE_FRAME");
+		static const uint64_t target = (env != nullptr ? std::strtoull(env, nullptr, 10) : 0);
+		static std::atomic<uint64_t> presented {0};
+		if (target != 0) {
+			const auto n = presented.fetch_add(1, std::memory_order_relaxed);
+			if (n == target) {
+				LOGF("RenderDoc: auto-requesting capture at presented frame %" PRIu64 "\n", n);
+				RenderDocRequestCapture();
+			}
+		}
 	}
 
 	switch (g_state.load()) {
