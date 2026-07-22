@@ -16,7 +16,11 @@
 
 #include <algorithm>
 #include <atomic>
+#include <cstdio>
+#include <cstdlib>
 #include <cstring>
+#include <filesystem>
+#include <vector>
 #include <memory>
 #include <vulkan/vk_enum_string_helper.h>
 namespace Libs::Graphics {
@@ -542,6 +546,9 @@ void CommandBuffer::BeginRenderPass(VulkanFramebuffer* framebuffer, RenderColorI
 	EXIT_IF(colors == nullptr);
 	EXIT_IF(requested_color_count > RENDER_COLOR_ATTACHMENTS_MAX);
 
+	void DumpRenderPassColorTarget(RenderColorInfo*, uint32_t);
+	DumpRenderPassColorTarget(colors, requested_color_count);
+
 	bool     with_depth = (depth->format != VK_FORMAT_UNDEFINED && depth->vulkan_buffer != nullptr);
 	uint32_t color_count = 0;
 	for (uint32_t i = 0; i < requested_color_count; i++) {
@@ -651,6 +658,48 @@ void CommandBuffer::BeginRenderPass(VulkanFramebuffer* framebuffer, RenderColorI
 	for (uint32_t i = 0; i < color_count; i++) {
 		colors[i].vulkan_buffer->layout = RENDER_COLOR_IMAGE_LAYOUT;
 	}
+}
+
+// Debug aid: with KYTY_DUMP_PASSES=1 the first colour attachment is written to
+// _PassDumps/pass_<n>.raw at the start of every render pass. Successive dumps bracket each pass,
+// so the pass that first introduces an artifact can be identified without a GPU debugger.
+void DumpRenderPassColorTarget(RenderColorInfo* colors, uint32_t color_count) {
+	static const bool enabled = [] {
+		const char* v = std::getenv("KYTY_DUMP_PASSES");
+		return v != nullptr && v[0] == '1';
+	}();
+	if (!enabled || color_count == 0 || colors[0].vulkan_buffer == nullptr) {
+		return;
+	}
+	auto* image = colors[0].vulkan_buffer;
+	if (image->extent.width == 0 || image->extent.height == 0) {
+		return;
+	}
+	static std::atomic<uint32_t> pass_index {0};
+	const auto                   n = pass_index.fetch_add(1, std::memory_order_relaxed);
+	if (n >= 400) {
+		return;
+	}
+	const uint64_t size =
+	    static_cast<uint64_t>(image->extent.width) * image->extent.height * 4ull;
+	std::vector<uint8_t> pixels(size);
+	UtilFillBuffer(g_render_ctx->GetGraphicCtx(), pixels.data(), size, image->extent.width, image,
+	               image->layout, VK_IMAGE_ASPECT_COLOR_BIT);
+	std::filesystem::create_directories("_PassDumps");
+	char path[128] {};
+	std::snprintf(path, sizeof(path), "_PassDumps/pass_%04u.raw", n);
+	if (auto* f = std::fopen(path, "wb"); f != nullptr) {
+		std::fwrite(pixels.data(), 1, pixels.size(), f);
+		std::fclose(f);
+	}
+	printf("[pass dump] %s  image=%p %ux%u format=%d addr=0x%016llx size=0x%llx slot=%u type=%d "
+	       "clear=%d\n",
+	       path, static_cast<void*>(image), image->extent.width, image->extent.height,
+	       static_cast<int>(image->format),
+	       static_cast<unsigned long long>(colors[0].base_addr),
+	       static_cast<unsigned long long>(colors[0].buffer_size), colors[0].target_slot,
+	       static_cast<int>(colors[0].type), static_cast<int>(colors[0].color_clear_enable));
+	fflush(stdout);
 }
 
 void CommandBuffer::EndRenderPass() const {

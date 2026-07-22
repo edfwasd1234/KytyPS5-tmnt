@@ -32,8 +32,10 @@
 #include <algorithm>
 #include <atomic>
 #include <cmath>
+#include <cstdlib>
 #include <cstring>
 #include <limits>
+#include <string>
 #include <span>
 #include <unordered_map>
 #include <vector>
@@ -452,6 +454,31 @@ void RenderDispatchDirect(uint64_t submit_id, CommandBuffer* buffer, HW::Context
 	if (TryConsumeComputeImageClear(input_info, buffer, thread_group_x, thread_group_y,
 	                                thread_group_z, mode)) {
 		return;
+	}
+	// Diagnostic: report unrecognised dispatches together with the guest ranges they write, so a
+	// clear that fails the recognition above can be matched to the surface it corrupts.
+	{
+		static const bool trace = [] {
+			const char* v = std::getenv("KYTY_TRACE_DISPATCH");
+			return v != nullptr && v[0] == '1';
+		}();
+		static std::atomic<uint32_t> n {0};
+		if (trace && n.fetch_add(1, std::memory_order_relaxed) < 200) {
+			std::string bufs;
+			for (const auto& raw_b: resources.buffers) {
+				const auto d = DecodeNativeDescriptor<ShaderBufferResource>(raw_b);
+				char       tmp[96] {};
+				std::snprintf(tmp, sizeof(tmp), " [0x%012llx n=%u s=%u]",
+				              static_cast<unsigned long long>(d.Base48()), d.NumRecords(),
+				              d.Stride());
+				bufs += tmp;
+			}
+			LOGF("[dispatch] shader=0x%016" PRIx64 " groups=%ux%ux%u local=%ux%ux%u mode=0x%x "
+			     "nbuf=%zu%s\n",
+			     program.shader_hash, thread_group_x, thread_group_y, thread_group_z,
+			     input_info.threads_num[0], input_info.threads_num[1], input_info.threads_num[2],
+			     mode, resources.buffers.size(), bufs.c_str());
+		}
 	}
 	const auto sampled_images = std::count_if(
 	    program.info.images.begin(), program.info.images.end(), [](const auto& image) {
