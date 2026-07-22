@@ -239,13 +239,18 @@ SelectDepthTransitionSource(bool depth_load_clear, bool sampled_native_available
 	           : DepthTransitionSource::Guest;
 }
 
-[[nodiscard]] inline MetaImageOverlap ClassifyMetaImageOverlap(bool sampled, bool render_target,
+[[nodiscard]] inline MetaImageOverlap ClassifyMetaImageOverlap(bool sampled, bool target,
                                                                bool gpu_modified,
                                                                bool buffer_modified) {
 	if (sampled && !gpu_modified) {
 		return MetaImageOverlap::RetainSampled;
 	}
-	if (render_target && !gpu_modified && !buffer_modified) {
+	// A clean colour or depth target that shares pages with newly registered metadata is retired.
+	// RetireImages handles both kinds identically (depth contents are ephemeral, so ownership of
+	// the range is released rather than written back). Depth targets reach this path constantly
+	// because the guest re-registers HTile for one shadow-atlas cascade over the pages a previous
+	// cascade's depth target still occupies.
+	if (target && !gpu_modified && !buffer_modified) {
 		return MetaImageOverlap::RetireTarget;
 	}
 	return MetaImageOverlap::Unsupported;
@@ -658,8 +663,17 @@ ClassifyRenderTargetOverlap(const RenderTargetInfo& cached, bool cached_gpu_modi
 	const bool pool_storage_shape_changed = cached.pitch != requested.pitch ||
 	                                        cached.height != requested.height ||
 	                                        cached.bytes_per_element != requested.bytes_per_element;
-	return cached.address == requested.address && page_isolated && pool_storage_shape_changed &&
-	               !cached_gpu_modified && !cached_buffer_modified && same_context
+	const bool clean = !cached_gpu_modified && !cached_buffer_modified && same_context;
+	// Same base: the guest rebound this allocation as a differently shaped surface.
+	const bool pool_reuse = cached.address == requested.address && pool_storage_shape_changed;
+	// Different base: the guest allocated a new render target whose pages overlap a still-cached,
+	// unmodified target left at another base - a freed target's memory being reused by a larger
+	// one. TMNT hits this constantly in-game (a new 0x80000 target over a stale 0x40000 one). A
+	// clean target has no un-persisted GPU content, so it is retired and rebuilt from guest memory
+	// if ever bound again; RequireRetirementIsolation verifies the retirement leaves no tracked
+	// page alias.
+	const bool distinct_overlap = cached.address != requested.address;
+	return page_isolated && clean && (pool_reuse || distinct_overlap)
 	           ? RenderTargetOverlap::RetireTarget
 	           : RenderTargetOverlap::Unsupported;
 }

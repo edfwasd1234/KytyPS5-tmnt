@@ -3520,7 +3520,8 @@ void TextureCache::RegisterMeta(uint64_t vaddr, uint64_t size, uint32_t layers) 
 		}
 		const auto overlap =
 		    ClassifyMetaImageOverlap(cached->kind == CachedImage::Kind::Texture,
-		                             cached->kind == CachedImage::Kind::RenderTarget,
+		                             cached->kind == CachedImage::Kind::RenderTarget ||
+		                                 cached->kind == CachedImage::Kind::DepthTarget,
 		                             cached->gpu_modified, cached->buffer_modified);
 		if (overlap == MetaImageOverlap::Unsupported) {
 			EXIT("TextureCache: metadata aliases image pages, addr=0x%016" PRIx64
@@ -3540,9 +3541,10 @@ void TextureCache::RegisterMeta(uint64_t vaddr, uint64_t size, uint32_t layers) 
 	if (!retire.empty()) {
 		RequireRetirementIsolation(retire, "metadata", range_vaddr, range_size);
 		for (const auto* cached: retire) {
-			LOGF("TextureCache: retiring a CPU-current render target for metadata reuse, "
+			LOGF("TextureCache: retiring a CPU-current %s for metadata reuse, "
 			     "metadata=0x%016" PRIx64 "+0x%016" PRIx64 " target=0x%016" PRIx64 "+0x%016" PRIx64
 			     "\n",
+			     cached->kind == CachedImage::Kind::DepthTarget ? "depth target" : "render target",
 			     range_vaddr, range_size, cached->Address(), cached->Size());
 		}
 		RetireImages(retire);

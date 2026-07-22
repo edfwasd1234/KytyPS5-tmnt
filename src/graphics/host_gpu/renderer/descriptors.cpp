@@ -293,17 +293,21 @@ bool IsSupportedDepthTargetDescriptor(const ShaderTextureResource& descriptor,
 	const auto width  = static_cast<uint32_t>(descriptor.Width5()) + 1u;
 	const auto height = static_cast<uint32_t>(descriptor.Height5()) + 1u;
 	const auto pitch  = TileGetTexturePitch(descriptor.Format(), width, 1, descriptor.TileMode());
-	// height may exceed the image extent when the depth target's extent was inferred from the
-	// rendered sub-region of a larger surface (see FindDepthTargetByRange); the view is bound with
-	// rescaled coordinates in that case.
+	// The descriptor may describe a larger surface than the image in either axis. The guest programs
+	// no depth extent registers at all (see ResolveRenderDepthTarget), so the depth target's extent
+	// is inferred from the colour target or viewport and describes the sub-region being rendered
+	// rather than the whole allocation - a shadow atlas rendered one cascade at a time produces an
+	// image smaller than the atlas descriptor in width, height, or both.
+	// APPROXIMATION: such a view is bound to the smaller image, so normalized coordinates rescale
+	// and shadows sampled through it are geometrically wrong. See the README's known limitations.
 	return image.type == VulkanImageType::DepthStencil && image.layers == 1 &&
-	       width == image.extent.width && height >= image.extent.height &&
+	       width >= image.extent.width && height >= image.extent.height &&
 	       descriptor.Depth() == 0 && descriptor.BaseLevel() == 0 && descriptor.LastLevel() == 0 &&
 	       descriptor.MaxMip() == 0 && descriptor.MinLod() == 0 && descriptor.BaseArray5() == 0 &&
 	       descriptor.TileMode() == Prospero::GpuEnumValue(Prospero::TileMode::kDepth) &&
 	       descriptor.Type() == Prospero::GpuEnumValue(Prospero::ImageType::kColor2D) &&
 	       descriptor.BCSwizzle() == 0 && !descriptor.MsaaDepth() && pitch >= width &&
-	       pitch == image.guest_pitch;
+	       pitch >= image.guest_pitch;
 }
 
 static bool IsSupportedDepthTextureEncoding(const ShaderTextureResource& descriptor) {

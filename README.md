@@ -89,8 +89,23 @@ change is described with the symptom it fixed so the reasoning can be checked.
   `requiredSubgroupSizeStages` commonly omits the vertex stage.
 - **Sampled depth ranges larger than the depth target are tolerated.** A shader may sample a whole
   shadow atlas through one descriptor while only a sub-region of it is bound as a depth target. That
-  lookup previously aborted. It now binds the live depth image; ambiguous matches and the barrier
-  path remain strict.
+  lookup previously aborted. It now binds the live depth image (in width, height, or both);
+  ambiguous matches and the barrier path remain strict.
+- **HTile metadata overlapping a clean depth target retires it.** Re-registering depth metadata for
+  a new shadow-atlas cascade can overlap the pages of a previous cascade's depth target. The overlap
+  classifier only handled colour targets and textures, so a depth target aborted; a clean one now
+  retires like a colour target (the retire path already supported depth).
+- **A new render target overlapping a clean one at a different base retires it.** When the guest
+  allocates a render target whose pages overlap a still-cached, unmodified target left at another
+  base (a freed target's memory reused by a larger one), the classifier aborted. A clean target is
+  now retired and rebuilt from guest memory; `RequireRetirementIsolation` verifies no tracked page
+  alias is left behind.
+- **Guest-reserved placeholder ranges are demand-committed on write.** A title can reserve a large
+  placeholder virtual range and write into it directly, expecting demand-commit rather than mapping
+  backing first (TMNT's main heap allocator does this). The generic fault path cannot service that —
+  a plain `VirtualAlloc(MEM_COMMIT)` cannot commit a page of a placeholder. The kernel's own commit
+  path handles it now, confined to ranges the guest explicitly reserved so it never commits at
+  arbitrary faulted addresses (which previously stole address space and produced a black screen).
 
 **Known limitations**
 

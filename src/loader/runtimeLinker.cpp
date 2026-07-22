@@ -560,6 +560,14 @@ static bool KytyExceptionHandler(const Common::HostException::ExceptionInfo& exc
 					const uint64_t chunk =
 					    std::min<uint64_t>(UINT64_C(0x400000), region_end - page_addr);
 					success = (VirtualAlloc(target_ptr, chunk, MEM_COMMIT, PAGE_READWRITE) != nullptr);
+					// Placeholder-backed reserves fail the plain VirtualAlloc above. A guest that
+					// reserves a placeholder range and writes into it without mapping backing
+					// (TMNT's main heap allocator) is serviced by the kernel's own placeholder
+					// commit path, which is confined to ranges the guest explicitly reserved.
+					if (!success) {
+						success = Libs::LibKernel::Memory::KernelHandleReservedRangeAccessViolation(
+						    info->access_violation_vaddr);
+					}
 				}
 				// MEM_FREE: never allocate here. Committing at arbitrary faulted addresses
 				// steals address space from the flexible-memory allocator (it caused Unity's

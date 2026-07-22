@@ -3228,21 +3228,55 @@ bool KernelHandleReservedRangeAccessViolation(uint64_t vaddr) {
 	std::lock_guard<std::recursive_mutex> memory_operation_lock(g_memory_operation_mutex);
 
 	VirtualRanges::Range range {};
-	if (!g_virtual_ranges->Query(vaddr, 0, &range) ||
-	    std::strncmp(range.name, "AMM", KERNEL_MAXIMUM_NAME_LENGTH) != 0) {
+	if (!g_virtual_ranges->Query(vaddr, 0, &range)) {
 		return false;
 	}
-	// Dynamically commit reserved AMM memory to allow guest execution to continue. Commit a
-	// large chunk (bounded by the range) rather than one page so conservative GC scans do not
-	// degrade into a fault-per-page storm.
-	uint64_t page_addr = vaddr & ~UINT64_C(0xFFF);
+	// Only demand-commit memory the guest explicitly reserved. Committing arbitrary faulted
+	// addresses is the documented black-screen trap (it steals address space the flexible-memory
+	// allocator needs); confining this to reserved ranges the guest already owns avoids that.
+	if (!IsReservedRangeType(range.type)) {
+		return false;
+	}
+	// Some guests (TMNT's main heap allocator) reserve a large placeholder range and then write
+	// into it directly, expecting demand-commit rather than mapping backing first. The generic VEH
+	// path cannot service this: a plain VirtualAlloc(MEM_COMMIT) cannot commit a page of a
+	// placeholder reservation. Commit through the placeholder machinery instead, a bounded chunk at
+	// a time so a conservative GC scan does not degrade into a fault-per-page storm.
 #if KYTY_PLATFORM == KYTY_PLATFORM_WINDOWS
 	const uint64_t range_end = range.start + range.size;
-	const uint64_t chunk = std::min<uint64_t>(UINT64_C(0x400000), range_end > page_addr ? range_end - page_addr : 0x1000);
-	VirtualAlloc(reinterpret_cast<void*>(page_addr), chunk, MEM_COMMIT, PAGE_READWRITE);
-#endif
-	LOGF("[Compat Patch] Committed AMM reserved chunk for 0x%016" PRIx64 "\n", page_addr);
+	const uint64_t page_addr = vaddr & ~UINT64_C(0xFFF);
+	if (range.placeholder_backed) {
+		if (g_placeholder_address_space == nullptr) {
+			return false;
+		}
+		// Tile the range into fixed chunks measured from range.start so a chunk is always either
+		// wholly free or wholly committed - never straddling the placeholder split boundary that
+		// MEM_REPLACE_PLACEHOLDER requires.
+		constexpr uint64_t CHUNK       = UINT64_C(0x400000);
+		const uint64_t     rel         = page_addr - range.start;
+		const uint64_t     chunk_start = range.start + (rel / CHUNK) * CHUNK;
+		const uint64_t     chunk_size  = std::min<uint64_t>(CHUNK, range_end - chunk_start);
+		if (!g_placeholder_address_space->Commit(chunk_start, chunk_size,
+		                                         VirtualMemory::Mode::ReadWrite)) {
+			return false;
+		}
+		LOGF("[Compat Patch] Committed reserved placeholder chunk 0x%016" PRIx64 "+0x%016" PRIx64
+		     " (name=%s) for fault at 0x%016" PRIx64 "\n",
+		     chunk_start, chunk_size, range.name, vaddr);
+		return true;
+	}
+	const uint64_t chunk =
+	    std::min<uint64_t>(UINT64_C(0x400000), range_end > page_addr ? range_end - page_addr : 0x1000);
+	if (VirtualAlloc(reinterpret_cast<void*>(page_addr), chunk, MEM_COMMIT, PAGE_READWRITE) ==
+	    nullptr) {
+		return false;
+	}
+	LOGF("[Compat Patch] Committed reserved chunk for 0x%016" PRIx64 " (name=%s)\n", page_addr,
+	     range.name);
 	return true;
+#else
+	return false;
+#endif
 }
 
 int KYTY_SYSV_ABI KernelVirtualQuery(const void* addr, int flags, VirtualQueryInfo* info,
