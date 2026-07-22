@@ -463,7 +463,7 @@ void RenderDispatchDirect(uint64_t submit_id, CommandBuffer* buffer, HW::Context
 			return v != nullptr && v[0] == '1';
 		}();
 		static std::atomic<uint32_t> n {0};
-		if (trace && n.fetch_add(1, std::memory_order_relaxed) < 200) {
+		if (trace && n.fetch_add(1, std::memory_order_relaxed) < 2000) {
 			std::string bufs;
 			for (const auto& raw_b: resources.buffers) {
 				const auto d = DecodeNativeDescriptor<ShaderBufferResource>(raw_b);

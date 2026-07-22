@@ -83,7 +83,10 @@ public:
 	[[nodiscard]] VkImageView GetStorageTextureSampledView(GraphicContext*            ctx,
 	                                                       StorageTextureVulkanImage* image,
 	                                                       const ImageInfo&           info);
-	[[nodiscard]] DepthStencilVulkanImage* FindDepthTargetByRange(uint64_t vaddr, uint64_t size);
+	// `sampled` marks a shader texture lookup, where a descriptor whose footprint is larger than
+	// the depth target at that base is tolerated (returns nullptr) instead of being fatal.
+	[[nodiscard]] DepthStencilVulkanImage* FindDepthTargetByRange(uint64_t vaddr, uint64_t size,
+	                                                              bool sampled = false);
 	[[nodiscard]] bool                     HasPageOverlap(uint64_t vaddr, uint64_t size);
 	[[nodiscard]] bool                     HasRangeOverlap(uint64_t vaddr, uint64_t size);
 	[[nodiscard]] bool HasGpuModifiedRangeOverlap(uint64_t vaddr, uint64_t size);

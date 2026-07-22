@@ -12,5 +12,11 @@ _DownloadData/
 _Textures/
 *.log
 
+# Opt-in graphics debug dumps (KYTY_DUMP_PASSES, KYTY_DUMP_UPLOAD, KYTY_DUMP_FLIP, --rd)
+_PassDumps/
+_Uploads/
+_RenderDoc/
+flip_dump.*
+
 # Local agent/tooling configuration
 .agents/

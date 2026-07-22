@@ -387,6 +387,26 @@ void ResolveRenderDepthTarget(uint64_t submit_id, CommandBuffer* buffer, const H
 	    (has_htile && htile_backing_size > TRACKER_ADDRESS_SIZE - z.htile_data_base_addr)) {
 		DepthFatal("layered depth backing range is invalid");
 	}
+	if (graphics_debug_dump_enabled()) {
+		// Diagnostic: record which register source decided the depth extent, and what the guest's
+		// own slice footprint says, so a render-area-vs-surface-footprint mismatch is visible.
+		// TMNT programs none of them (all three *_valid are 0), so the extent is always inferred
+		// from the colour target or viewport - see FindDepthTargetByRange for the consequence.
+		static std::atomic<uint32_t> depth_reg_log {0};
+		if (depth_reg_log.fetch_add(1, std::memory_order_relaxed) < 64) {
+			LOGF("DepthTargetRegs: base=0x%016" PRIx64 " extent=%ux%u pitch=%u bytes=%u"
+			     " size=0x%016" PRIx64 " | size_xy_valid=%d x_max=%u y_max=%u | wh_valid=%d w=%u"
+			     " h=%u | pitch_height_valid=%d pitch8=%u height8=%u slice64=%u slice_bytes=0x%016"
+			     PRIx64 " | htile=%d\n",
+			     z.z_read_base_addr, width, height, pitch, bytes, expected_size,
+			     static_cast<int>(size_xy_valid), z.size.x_max, z.size.y_max,
+			     static_cast<int>(wh_valid), z.width, z.height,
+			     static_cast<int>(z.pitch_height_valid), z.pitch_div8_minus1,
+			     z.height_div8_minus1, z.slice_div64_minus1,
+			     (static_cast<uint64_t>(z.slice_div64_minus1) + 1u) * 64u,
+			     static_cast<int>(has_htile));
+		}
+	}
 	r->htile                = has_htile;
 	r->width                = width;
 	r->height               = height;

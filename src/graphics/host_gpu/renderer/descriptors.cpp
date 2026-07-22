@@ -293,8 +293,11 @@ bool IsSupportedDepthTargetDescriptor(const ShaderTextureResource& descriptor,
 	const auto width  = static_cast<uint32_t>(descriptor.Width5()) + 1u;
 	const auto height = static_cast<uint32_t>(descriptor.Height5()) + 1u;
 	const auto pitch  = TileGetTexturePitch(descriptor.Format(), width, 1, descriptor.TileMode());
+	// height may exceed the image extent when the depth target's extent was inferred from the
+	// rendered sub-region of a larger surface (see FindDepthTargetByRange); the view is bound with
+	// rescaled coordinates in that case.
 	return image.type == VulkanImageType::DepthStencil && image.layers == 1 &&
-	       width == image.extent.width && height == image.extent.height &&
+	       width == image.extent.width && height >= image.extent.height &&
 	       descriptor.Depth() == 0 && descriptor.BaseLevel() == 0 && descriptor.LastLevel() == 0 &&
 	       descriptor.MaxMip() == 0 && descriptor.MinLod() == 0 && descriptor.BaseArray5() == 0 &&
 	       descriptor.TileMode() == Prospero::GpuEnumValue(Prospero::TileMode::kDepth) &&
@@ -479,7 +482,7 @@ NativeTexture(uint64_t submit_id, CommandBuffer* command_buffer,
 	                          descriptor.MsaaDepth();
 	if (image == nullptr) {
 		if (check_depth) {
-			image = g_render_ctx->GetTextureCache()->FindDepthTargetByRange(address, size.size);
+			image = g_render_ctx->GetTextureCache()->FindDepthTargetByRange(address, size.size, true);
 		} else {
 			image = g_render_ctx->GetTextureCache()->FindRenderTargetByRange(command_buffer,
 			                                                                 address, size.size);

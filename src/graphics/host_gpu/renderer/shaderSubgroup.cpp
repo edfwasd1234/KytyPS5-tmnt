@@ -2,13 +2,46 @@
 
 #include "graphics/shader/recompiler/SpirvEmitter.h"
 
+#include <cstdlib>
+
 namespace Libs::Graphics {
 
 ShaderLaneMaskMode SelectGraphicsLaneMaskMode(const GraphicContext& context,
                                               uint32_t              guest_wave_size) {
-	return context.subgroup_size == 32u && guest_wave_size == 64u
-	           ? ShaderLaneMaskMode::PerInvocation
-	           : ShaderLaneMaskMode::NativeWave;
+	// Diagnostic override: KYTY_LANE_MASK=per|native forces the graphics lane-mask model so the
+	// wave-uniform (NativeWave) and per-lane (PerInvocation) models can be compared on the same
+	// frame.
+	static const int override_mode = [] {
+		const char* v = std::getenv("KYTY_LANE_MASK");
+		if (v == nullptr) {
+			return 0;
+		}
+		if (v[0] == 'p') {
+			return 1;
+		}
+		if (v[0] == 'n') {
+			return 2;
+		}
+		return 0;
+	}();
+	if (override_mode == 1) {
+		return ShaderLaneMaskMode::PerInvocation;
+	}
+	if (override_mode == 2) {
+		return ShaderLaneMaskMode::NativeWave;
+	}
+	// NativeWave models EXEC/VCC as a fixed guest_wave_size-wide mask, so it is only sound when the
+	// host is guaranteed to run every graphics stage at exactly that width.
+	// VkPhysicalDeviceVulkan11Properties::subgroupSize is merely the device's default/preferred
+	// width: when minSubgroupSize != maxSubgroupSize the driver may pick either end per stage, and
+	// graphics pipelines cannot pin it because requiredSubgroupSizeStages typically omits the
+	// vertex stage. RDNA reports subgroupSize=64 but runs fragment shaders at wave32; the 64-lane
+	// EXEC/ballot math then collapses predicated colour exports to one lane per wave, writing a
+	// single pixel per 8x8 fragment tile. The per-invocation model is width-independent, so use it
+	// whenever the width is not fixed.
+	const bool width_is_fixed = context.subgroup_size == guest_wave_size &&
+	                            context.min_subgroup_size == context.max_subgroup_size;
+	return width_is_fixed ? ShaderLaneMaskMode::NativeWave : ShaderLaneMaskMode::PerInvocation;
 }
 
 ShaderSubgroupConfiguration ConfigureShaderSubgroup(const GraphicContext&                context,

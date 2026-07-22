@@ -13,6 +13,7 @@
 #include "graphics/host_gpu/utils.h"
 #include "graphics/host_gpu/vma.h"
 #include "graphics/presentation/window.h"
+#include "kernel/memory.h"
 
 #include <algorithm>
 #include <atomic>
@@ -691,6 +692,23 @@ void DumpRenderPassColorTarget(RenderColorInfo* colors, uint32_t color_count) {
 	if (auto* f = std::fopen(path, "wb"); f != nullptr) {
 		std::fwrite(pixels.data(), 1, pixels.size(), f);
 		std::fclose(f);
+	}
+	// Companion dump of the guest-side backing for the same attachment. Comparing this against the
+	// image tells us whether a sparse-write artifact already exists in guest memory (writer is
+	// guest-side) or is introduced by the tiled upload into the image.
+	if (colors[0].base_addr != 0 && colors[0].buffer_size != 0) {
+		std::vector<uint8_t> guest(colors[0].buffer_size);
+		const bool           ok = ::Libs::LibKernel::Memory::TryReadBacking(
+            colors[0].base_addr, guest.data(), colors[0].buffer_size);
+		char gpath[128] {};
+		std::snprintf(gpath, sizeof(gpath), "_PassDumps/pass_%04u.guest", n);
+		if (ok) {
+			if (auto* gf = std::fopen(gpath, "wb"); gf != nullptr) {
+				std::fwrite(guest.data(), 1, guest.size(), gf);
+				std::fclose(gf);
+			}
+		}
+		printf("[pass guest] %s read=%d\n", gpath, static_cast<int>(ok));
 	}
 	printf("[pass dump] %s  image=%p %ux%u format=%d addr=0x%016llx size=0x%llx slot=%u type=%d "
 	       "clear=%d\n",

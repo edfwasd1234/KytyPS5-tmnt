@@ -31,8 +31,9 @@ Linux support is planned, but Windows is the only supported platform at this tim
 
 ## Fork Changes
 
-These changes were made while debugging a Unity (IL2CPP) PS5 title that previously showed only a
-black screen. Each is described with the symptom it fixed so the reasoning can be checked.
+These changes were made while debugging a Unity (IL2CPP) PS5 title, *TMNT: Mutants Unleashed*, that
+previously showed only a black screen. It now boots to its title screen and runs at 60 fps. Each
+change is described with the symptom it fixed so the reasoning can be checked.
 
 **Loader and kernel**
 
@@ -77,13 +78,33 @@ black screen. Each is described with the symptom it fixed so the reasoning can b
   GPU ownership of the range is released rather than written back.
 - **Compute queues share the graphics queue family.** Readback buffers use exclusive sharing, which
   Vulkan only permits within one family; compute queues previously spilled into a second family.
+- **Graphics lane-mask model no longer trusts `subgroupSize`.** `VkPhysicalDeviceVulkan11Properties::subgroupSize`
+  is the device's *default* width, not a per-stage guarantee. RDNA reports 64 while running fragment
+  shaders at wave32, so shaders compiled for a native 64-lane wave silently got 32-lane EXEC/ballot
+  semantics and predicated colour exports collapsed to one lane per wave — on AMD a wave64 pixel
+  shader covers an 8x8 fragment tile, so every colour surface was written at exactly one pixel per
+  8x8 block. The fixed-width model is now used only when the width cannot vary
+  (`minSubgroupSize == maxSubgroupSize`); otherwise the width-independent per-invocation model is
+  selected. Pinning via subgroup size control is not an alternative for graphics, because
+  `requiredSubgroupSizeStages` commonly omits the vertex stage.
+- **Sampled depth ranges larger than the depth target are tolerated.** A shader may sample a whole
+  shadow atlas through one descriptor while only a sub-region of it is bound as a depth target. That
+  lookup previously aborted. It now binds the live depth image; ambiguous matches and the barrier
+  path remain strict.
 
 **Known limitations**
 
-The viewport-derived depth extent is a heuristic. When one depth allocation is shared by passes
-with different viewports it can overestimate the surface size, which surfaces later as a
-texture-cache range conflict. The title above now loads assets, compiles shaders and issues tens of
-thousands of draw calls, but does not yet present a complete frame.
+The depth extent is a heuristic. A title can bind a depth surface with valid base addresses but no
+extent register at all — TMNT programs none of the three, so the extent is always inferred from a
+bound colour target, the viewport, or the screen scissor. The inferred value describes the region
+being rendered rather than the surface allocation, so when one allocation is shared by passes with
+different viewports it can under- or overestimate the surface size.
+
+The consequence is visible in shadow-atlas sampling: the bound depth image is smaller than the
+descriptor describes, so normalized coordinates rescale and shadows sampled that way are
+geometrically wrong. Fixing this properly requires sizing depth images to the whole guest
+allocation and rendering into a sub-region, which Vulkan permits — a render area may be smaller
+than its attachment.
 
 ## Bugs and Issues
 

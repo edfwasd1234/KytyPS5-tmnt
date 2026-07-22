@@ -23,6 +23,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <mutex>
@@ -963,6 +964,42 @@ void CreateVideoOutViews(GraphicContext* ctx, VideoOutVulkanImage* image) {
 	}
 }
 
+// Debug aid: with KYTY_DUMP_UPLOAD=1 every guest->image upload writes both the raw guest bytes
+// (exactly as the tiler reads them, i.e. through the guest VA, not the backing alias) and the
+// detiled linear result. Comparing the two isolates a sparse-source problem from a sparse-detile
+// problem.
+static void DumpUploadSource(const char* kind, uint64_t addr, const void* guest, const void* linear,
+                             uint64_t size) {
+	static const bool enabled = [] {
+		const char* v = std::getenv("KYTY_DUMP_UPLOAD");
+		return v != nullptr && v[0] == '1';
+	}();
+	if (!enabled || size == 0) {
+		return;
+	}
+	static std::atomic<uint32_t> n {0};
+	const auto                   i = n.fetch_add(1, std::memory_order_relaxed);
+	if (i >= 64) {
+		return;
+	}
+	char path[160] {};
+	std::snprintf(path, sizeof(path), "_Uploads/%s_%03u_%010llx.guest", kind, i,
+	              static_cast<unsigned long long>(addr));
+	if (auto* f = std::fopen(path, "wb"); f != nullptr) {
+		std::fwrite(guest, 1, size, f);
+		std::fclose(f);
+	}
+	std::snprintf(path, sizeof(path), "_Uploads/%s_%03u_%010llx.linear", kind, i,
+	              static_cast<unsigned long long>(addr));
+	if (auto* f = std::fopen(path, "wb"); f != nullptr) {
+		std::fwrite(linear, 1, size, f);
+		std::fclose(f);
+	}
+	printf("[upload dump] %s %u addr=0x%010llx size=0x%llx\n", kind, i,
+	       static_cast<unsigned long long>(addr), static_cast<unsigned long long>(size));
+	fflush(stdout);
+}
+
 void UploadRenderTargetLayers(GraphicContext* ctx, RenderTextureVulkanImage* image,
                               const RenderTargetInfo& info, uint32_t base_layer,
                               uint32_t layer_count, bool refresh) {
@@ -1009,6 +1046,8 @@ void UploadRenderTargetLayers(GraphicContext* ctx, RenderTextureVulkanImage* ima
 		TileConvertTiledToLinearRenderTarget(
 		    scratch.Data(), reinterpret_cast<const void*>(info.address), info.width, info.height,
 		    info.pitch, info.bytes_per_element, slice_size);
+		DumpUploadSource("rt", info.address, reinterpret_cast<const void*>(info.address),
+		                 scratch.Data(), slice_size);
 		UtilFillImage(ctx, image, scratch.Data(), slice_size, info.pitch,
 		              static_cast<uint64_t>(VK_IMAGE_LAYOUT_GENERAL));
 	} else {
@@ -1225,6 +1264,8 @@ void UploadVideoOut(GraphicContext* ctx, VideoOutVulkanImage* image, const Video
 	TileConvertTiledToLinearRenderTarget(
 	    scratch.Data(), reinterpret_cast<const void*>(info.address), info.width, info.height,
 	    info.pitch, info.bytes_per_element, info.size);
+	DumpUploadSource("vo", info.address, reinterpret_cast<const void*>(info.address), scratch.Data(),
+	                 info.size);
 	UtilFillImage(ctx, image, scratch.Data(), info.size, info.pitch,
 	              static_cast<uint64_t>(VK_IMAGE_LAYOUT_GENERAL));
 }
@@ -3238,7 +3279,8 @@ bool TextureCache::InvalidateMemoryFromGPU(uint64_t vaddr, uint64_t size,
 	return false;
 }
 
-DepthStencilVulkanImage* TextureCache::FindDepthTargetByRange(uint64_t vaddr, uint64_t size) {
+DepthStencilVulkanImage* TextureCache::FindDepthTargetByRange(uint64_t vaddr, uint64_t size,
+                                                              bool sampled) {
 	if (vaddr == 0 || size == 0 || vaddr >= TRACKER_ADDRESS_SIZE ||
 	    size > TRACKER_ADDRESS_SIZE - vaddr) {
 		EXIT("TextureCache: invalid depth-target range query, addr=0x%016" PRIx64
@@ -3253,10 +3295,50 @@ DepthStencilVulkanImage* TextureCache::FindDepthTargetByRange(uint64_t vaddr, ui
 			continue;
 		}
 		if (!IsDepthTargetRangeCompatible(cached->depth, vaddr, size) || found != nullptr) {
+			const auto& d = cached->depth;
+			// A sampled T# can describe a larger footprint than the depth surface bound at that
+			// base. TMNT does this with its shadow atlas: the guest programs no depth extent
+			// registers at all (size/width_height/pitch_height are all invalid), so the depth
+			// extent is *inferred* from the current colour target or viewport and ends up
+			// describing the sub-region being rendered rather than the whole atlas.
+			// APPROXIMATION: bind the live depth image anyway. Its extent is smaller than the
+			// descriptor claims, so normalized coordinates rescale and shadows sampled this way
+			// are geometrically wrong. Serving it from guest memory instead is not an option -
+			// depth is only written back on CPU faults, and a sampled texture aliasing a live
+			// depth target re-enters the memory tracker. Correctly fixing this needs the depth
+			// image to cover the whole guest allocation rather than the inferred render area.
+			const bool sampled_superset =
+			    sampled && found == nullptr && vaddr == d.address && size > d.size;
+			if (sampled_superset) {
+				static std::atomic<uint32_t> log_count {0};
+				if (log_count.fetch_add(1, std::memory_order_relaxed) < 8) {
+					LOGF("TextureCache: sampled depth range 0x%016" PRIx64 "+0x%016" PRIx64
+					     " is larger than the inferred depth target 0x%016" PRIx64 "+0x%016" PRIx64
+					     " (%ux%u); binding it anyway - sampled depth will be rescaled\n",
+					     vaddr, size, d.address, d.size, d.width, d.height);
+				}
+				found = static_cast<DepthStencilVulkanImage*>(cached->image);
+				continue;
+			}
+			for (const auto& other: m_images) {
+				if (other->kind != CachedImage::Kind::DepthTarget) {
+					continue;
+				}
+				const auto& o = other->depth;
+				LOGF("  cached depth target: 0x%016" PRIx64 "+0x%016" PRIx64 " extent=%ux%u"
+				     " pitch=%u bpe=%u guest_format=%u layers=%u htile=0x%016" PRIx64 "\n",
+				     o.address, o.size, o.width, o.height, o.pitch, o.bytes_per_element,
+				     o.guest_format, o.layers, o.htile_address);
+			}
 			EXIT("TextureCache: incompatible or ambiguous depth-target range, addr=0x%016" PRIx64
-			     " size=0x%016" PRIx64 " cached=0x%016" PRIx64 "+0x%016" PRIx64 " previous=%p\n",
+			     " size=0x%016" PRIx64 " cached=0x%016" PRIx64 "+0x%016" PRIx64 " previous=%p"
+			     " cached_extent=%ux%u pitch=%u bpe=%u guest_format=%u vk_format=%d tile=%u"
+			     " layers=%u stencil=0x%016" PRIx64 "+0x%016" PRIx64 " htile=0x%016" PRIx64
+			     "+0x%016" PRIx64 "\n",
 			     vaddr, size, cached->depth.address, cached->depth.size,
-			     static_cast<const void*>(found));
+			     static_cast<const void*>(found), d.width, d.height, d.pitch,
+			     d.bytes_per_element, d.guest_format, static_cast<int>(d.format), d.tile_mode,
+			     d.layers, d.stencil_address, d.stencil_size, d.htile_address, d.htile_size);
 		}
 		const bool stencil_range =
 		    vaddr == cached->depth.stencil_address && size == cached->depth.stencil_size;
