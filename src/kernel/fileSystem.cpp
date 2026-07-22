@@ -22,6 +22,11 @@
 #include <random>
 #include <vector>
 
+namespace Libs {
+// Defined in libs/libAmpr.cpp: resolves a guest path to the APR file id used as st_ino.
+uint32_t AprResolveGuestPathId(const char* guest_path);
+} // namespace Libs
+
 namespace Libs::LibKernel::FileSystem {
 
 LIB_NAME("libkernel", "libkernel");
@@ -462,6 +467,61 @@ int KYTY_SYSV_ABI KernelClose(int d) {
 	return OK;
 }
 
+// Raw read()/pread() of a directory fd on PS5 returns PFS on-disk dirent records, not the
+// FreeBSD getdents layout. Unity's PS5 VFS enumerates /app0 directories this way at boot and
+// silently registers zero files if the format is wrong.
+//   struct pfs_dirent { u32 ino; u32 type; u32 namelen; u32 entsize; char name[]; }
+//   type: 2 = file, 3 = dir; entsize = align8(16 + namelen); records are contiguous,
+//   a zero ino terminates the listing.
+static std::vector<uint8_t> BuildPfsDirentBlob(const std::string&                         dir_name,
+                                               const std::vector<Common::File::DirEntry>& dents) {
+	std::vector<uint8_t> blob;
+	blob.reserve(dents.size() * 48 + 64);
+	const std::string dir_prefix =
+	    (dir_name.empty() || dir_name.back() == '/') ? dir_name : dir_name + "/";
+	uint32_t fallback_ino = 2;
+	for (const auto& entry: dents) {
+		const auto&    name    = entry.name;
+		const auto     namelen = static_cast<uint32_t>(name.size());
+		const uint32_t entsize = (16u + namelen + 7u) & ~7u;
+		const auto     base    = blob.size();
+		// st_ino must match what stat() reports and what APR read commands accept.
+		uint32_t ino = 0;
+		if (name == "." || name == "..") {
+			ino = fallback_ino;
+		} else {
+			ino = ::Libs::AprResolveGuestPathId((dir_prefix + name).c_str());
+		}
+		if (ino == 0) {
+			ino = fallback_ino;
+		}
+		fallback_ino++;
+		blob.resize(base + entsize, 0);
+		*reinterpret_cast<uint32_t*>(blob.data() + base + 0)  = ino;
+		*reinterpret_cast<uint32_t*>(blob.data() + base + 4)  = entry.is_file ? 2u : 3u;
+		*reinterpret_cast<uint32_t*>(blob.data() + base + 8)  = namelen;
+		*reinterpret_cast<uint32_t*>(blob.data() + base + 12) = entsize;
+		std::memcpy(blob.data() + base + 16, name.data(), namelen);
+	}
+	// Zero-fill to a full 64K PFS block: real directories are block-sized, entries followed
+	// by zero records (a zero ino terminates the listing).
+	constexpr size_t PFS_BLOCK = 0x10000;
+	blob.resize(((blob.size() + 16 + PFS_BLOCK - 1) / PFS_BLOCK) * PFS_BLOCK, 0);
+	return blob;
+}
+
+static int64_t ReadDirectoryAsPfsDirents(File* file, void* buf, size_t nbytes, uint64_t offset) {
+	const auto blob = BuildPfsDirentBlob(file->name, file->dents);
+	if (offset >= blob.size()) {
+		return 0;
+	}
+	const auto to_copy = std::min<uint64_t>(nbytes, blob.size() - offset);
+	std::memcpy(buf, blob.data() + offset, to_copy);
+	LOGF("\t directory raw read (PFS dirents): offset=%" PRIu64 " -> %" PRIu64 " bytes\n", offset,
+	     to_copy);
+	return static_cast<int64_t>(to_copy);
+}
+
 int64_t KYTY_SYSV_ABI KernelRead(int d, void* buf, size_t nbytes) {
 	PRINT_NAME();
 
@@ -483,8 +543,13 @@ int64_t KYTY_SYSV_ABI KernelRead(int d, void* buf, size_t nbytes) {
 	if (file == nullptr) {
 		return KERNEL_ERROR_EBADF;
 	}
-
-	EXIT_NOT_IMPLEMENTED(file->directory);
+	if (file->directory) {
+		const auto result = ReadDirectoryAsPfsDirents(file, buf, nbytes, file->dents_offset);
+		if (result > 0) {
+			file->dents_offset += static_cast<uint64_t>(result);
+		}
+		return result;
+	}
 
 	EXIT_IF(!file->opened);
 
@@ -585,6 +650,9 @@ int64_t KYTY_SYSV_ABI KernelWrite(int d, const void* buf, size_t nbytes) {
 int64_t KYTY_SYSV_ABI KernelPread(int d, void* buf, size_t nbytes, int64_t offset) {
 	PRINT_NAME();
 
+	LOGF("\t d = %d, nbytes = %" PRIu64 ", offset = %" PRId64 "\n", d,
+	     static_cast<uint64_t>(nbytes), offset);
+
 	if (d < DESCRIPTOR_MIN) {
 		return KERNEL_ERROR_EPERM;
 	}
@@ -603,7 +671,10 @@ int64_t KYTY_SYSV_ABI KernelPread(int d, void* buf, size_t nbytes, int64_t offse
 		return KERNEL_ERROR_EBADF;
 	}
 
-	EXIT_NOT_IMPLEMENTED(file->directory);
+	if (file->directory) {
+		// pread must not move the fd's directory position.
+		return ReadDirectoryAsPfsDirents(file, buf, nbytes, static_cast<uint64_t>(offset));
+	}
 
 	EXIT_IF(!file->opened);
 
@@ -777,15 +848,20 @@ int KYTY_SYSV_ABI KernelStat(const char* path, FileStat* sb) {
 	EXIT_NOT_IMPLEMENTED(is_dir && is_file);
 
 	FileStat stat {};
-	stat.st_mode = 0000777u | (is_dir ? 0040000u : 0100000u);
+	stat.st_mode  = 0000777u | (is_dir ? 0040000u : 0100000u);
+	stat.st_nlink = 1;
+	// PS5 games use st_ino as the PFS inode / APR file id (Unity submits APR reads with it);
+	// an ino of 0 marks the file invalid and asset loading silently fails.
+	stat.st_ino = ::Libs::AprResolveGuestPathId(path_s.c_str());
 
 	auto at = Common::DateTime::FromSystemUTC();
 	auto wt = at;
 
 	if (is_dir) {
-		stat.st_size    = 0;
-		stat.st_blksize = 512;
-		stat.st_blocks  = 0;
+		// PFS directories are block-sized.
+		stat.st_size    = 0x10000;
+		stat.st_blksize = 0x10000;
+		stat.st_blocks  = 1;
 	} else {
 		stat.st_size    = static_cast<int64_t>(Common::File::Size(real_file_name));
 		stat.st_blksize = 512;
@@ -825,7 +901,10 @@ int KYTY_SYSV_ABI KernelFstat(int d, FileStat* sb) {
 	LOGF("\tKernelFstat: %s\n", Common::PathToString(file->real_name).c_str());
 
 	FileStat stat {};
-	stat.st_mode = 0000777u | (file->directory ? 0040000u : 0100000u);
+	stat.st_mode  = 0000777u | (file->directory ? 0040000u : 0100000u);
+	stat.st_nlink = 1;
+	// Match KernelStat: st_ino carries the PFS/APR file id on PS5.
+	stat.st_ino = ::Libs::AprResolveGuestPathId(file->name.c_str());
 
 	auto at = Common::DateTime::FromSystemUTC();
 	auto wt = at;
@@ -861,9 +940,10 @@ int KYTY_SYSV_ABI KernelFstat(int d, FileStat* sb) {
 		stat.st_blksize = 512;
 		stat.st_blocks  = (stat.st_size + 511) / 512;
 	} else {
-		stat.st_size    = 0;
-		stat.st_blksize = 512;
-		stat.st_blocks  = 0;
+		// PFS directories are block-sized.
+		stat.st_size    = 0x10000;
+		stat.st_blksize = 0x10000;
+		stat.st_blocks  = 1;
 	}
 
 	SecToTimespec(&stat.st_atim, at.ToUnix());

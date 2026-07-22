@@ -228,7 +228,20 @@ static bool ParseArgs(int argc, char* argv[], RunOptions& options, bool& show_he
 	return show_help || (!options.app0_dir.empty() && !options.elf.empty());
 }
 
+#if KYTY_PLATFORM == KYTY_PLATFORM_WINDOWS && defined(_DEBUG)
+#include <crtdbg.h>
+#endif
+
 int main(int argc, char* argv[]) {
+#if KYTY_PLATFORM == KYTY_PLATFORM_WINDOWS && defined(_DEBUG)
+	_CrtSetReportMode(_CRT_WARN, _CRTDBG_MODE_FILE);
+	_CrtSetReportFile(_CRT_WARN, _CRTDBG_FILE_STDERR);
+	_CrtSetReportMode(_CRT_ERROR, _CRTDBG_MODE_FILE);
+	_CrtSetReportFile(_CRT_ERROR, _CRTDBG_FILE_STDERR);
+	_CrtSetReportMode(_CRT_ASSERT, _CRTDBG_MODE_FILE);
+	_CrtSetReportFile(_CRT_ASSERT, _CRTDBG_FILE_STDERR);
+#endif
+
 	auto& slist = *SubsystemsList::Instance();
 
 	slist.SetArgs(argc, argv);

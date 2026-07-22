@@ -247,7 +247,7 @@ static int KYTY_SYSV_ABI MouseOpen(int user_id, int32_t type, int32_t index, con
 	     "\t param   = 0x%016" PRIx64 "\n",
 	     user_id, type, index, reinterpret_cast<uint64_t>(param));
 
-	if (type != 0 || index < 0 || index >= 2) {
+	if (index < 0 || index >= 2) {
 		return MOUSE_ERROR_INVALID_ARG;
 	}
 
@@ -344,7 +344,7 @@ static int KYTY_SYSV_ABI KeyboardOpen(int user_id, int32_t type, int32_t index, 
 	     "\t param   = 0x%016" PRIx64 "\n",
 	     user_id, type, index, reinterpret_cast<uint64_t>(param));
 
-	if (type != 0 || index < 0 || index >= 2) {
+	if (index < 0 || index >= 2) {
 		return KEYBOARD_ERROR_INVALID_ARG;
 	}
 

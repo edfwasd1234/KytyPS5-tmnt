@@ -24,10 +24,12 @@
 #include <array>
 #include <atomic>
 #include <chrono>
+#include <condition_variable>
 #include <cstddef>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <memory>
 #include <mutex>
 #include <random>
 #include <string>
@@ -1003,8 +1005,12 @@ static KYTY_SYSV_ABI KernelModule KernelLoadStartModule(const char* module_file_
 
 	LOGF("\tmodule_file_name = %s\n", module_file_name);
 
-	EXIT_NOT_IMPLEMENTED(flags != 0);
-	EXIT_NOT_IMPLEMENTED(opt != nullptr);
+	if (flags != 0) {
+		LOGF("WARNING: KernelLoadStartModule flags != 0 (%u)\n", flags);
+	}
+	if (opt != nullptr) {
+		LOGF("WARNING: KernelLoadStartModule opt != nullptr\n");
+	}
 
 	auto* rt = Common::Singleton<Loader::RuntimeLinker>::Instance();
 
@@ -1037,7 +1043,9 @@ static KYTY_SYSV_ABI KernelModule KernelLoadStartModule(const char* module_file_
 
 	LOGF("\tmodule_start() result = %d\n", result);
 
-	EXIT_NOT_IMPLEMENTED(result < 0);
+	if (result < 0) {
+		LOGF("WARNING: KernelLoadStartModule result < 0 (%d)\n", result);
+	}
 
 	if (res != nullptr) {
 		*res = result;
@@ -1055,8 +1063,12 @@ static int KYTY_SYSV_ABI KernelStopUnloadModule(KernelModule handle, size_t args
 
 	auto* rt = Common::Singleton<Loader::RuntimeLinker>::Instance();
 
-	EXIT_NOT_IMPLEMENTED(flags != 0);
-	EXIT_NOT_IMPLEMENTED(opt != nullptr);
+	if (flags != 0) {
+		LOGF("WARNING: KernelStopUnloadModule flags != 0 (%u)\n", flags);
+	}
+	if (opt != nullptr) {
+		LOGF("WARNING: KernelStopUnloadModule opt != nullptr\n");
+	}
 
 	auto* program = rt->FindProgramById(handle);
 
@@ -1079,7 +1091,9 @@ static int KYTY_SYSV_ABI KernelStopUnloadModule(KernelModule handle, size_t args
 
 	LOGF("\tmodule_stop() result = %d\n", result);
 
-	EXIT_NOT_IMPLEMENTED(result < 0);
+	if (result < 0) {
+		LOGF("WARNING: KernelStopUnloadModule result < 0 (%d)\n", result);
+	}
 
 	if (res != nullptr) {
 		*res = result;
@@ -1136,6 +1150,12 @@ static int KYTY_SYSV_ABI getpid() {
 	return 100;
 }
 
+static int KYTY_SYSV_ABI KernelIsNeoMode() {
+	PRINT_NAME();
+
+	return 0;
+}
+
 static void KYTY_SYSV_ABI KernelRtldSetApplicationHeapAPI(void* api[]) {
 	PRINT_NAME();
 
@@ -1158,7 +1178,10 @@ static void KYTY_SYSV_ABI KernelRtldSetApplicationHeapAPI(void* api[]) {
 static int64_t KYTY_SYSV_ABI write(int d, const char* str, int64_t size) {
 	// PRINT_NAME();
 
-	EXIT_NOT_IMPLEMENTED(d < 0);
+	if (d < 0) {
+		LOGF("WARNING: write descriptor < 0 (%d)\n", d);
+		return -1;
+	}
 
 	if (Network::Net::IsSocket(d)) {
 		return Network::Net::Send(d, str, static_cast<uint64_t>(size), 0);
@@ -1433,8 +1456,13 @@ static int KYTY_SYSV_ABI KernelGetModuleInfoFromAddr(uint64_t addr, int n, Modul
 	     "\tn = %d\n",
 	     addr, n);
 
-	EXIT_NOT_IMPLEMENTED(n != 2);
-	EXIT_NOT_IMPLEMENTED(r == nullptr);
+	if (n != 2) {
+		LOGF("WARNING: KernelGetModuleInfoFromAddr n != 2 (%d)\n", n);
+	}
+	if (r == nullptr) {
+		LOGF("ERROR: KernelGetModuleInfoFromAddr r is nullptr\n");
+		return -1;
+	}
 
 	auto* rt = Common::Singleton<Loader::RuntimeLinker>::Instance();
 
@@ -1463,7 +1491,7 @@ static void KYTY_SYSV_ABI KernelDebugRaiseException(int /*c1*/, int /*c2*/) {
 
 static void KYTY_SYSV_ABI exit(int code) {
 	PRINT_NAME();
-
+	LOGF("[TRACE] LibKernel::exit called with code %d\n", code);
 	::exit(code);
 }
 
@@ -1486,7 +1514,10 @@ static KYTY_SYSV_ABI NewReplace* KernelGetSanitizerNewReplaceExternal() {
 static KYTY_SYSV_ABI int elf_phdr_match_addr(ModuleInfo* m, uint64_t dtor_vaddr) {
 	PRINT_NAME();
 
-	EXIT_NOT_IMPLEMENTED(m == nullptr);
+	if (m == nullptr) {
+		LOGF("ERROR: elf_phdr_match_addr m is nullptr\n");
+		return 0;
+	}
 
 	auto* rt     = Common::Singleton<Loader::RuntimeLinker>::Instance();
 	auto* p      = rt->FindProgramByAddr(dtor_vaddr);
@@ -1540,7 +1571,9 @@ static KYTY_SYSV_ABI void pthread_cxa_finalize(void* /*p*/) {
 void KYTY_SYSV_ABI KernelSetThreadAtexitCount(get_thread_atexit_count_func_t func) {
 	PRINT_NAME();
 
-	EXIT_NOT_IMPLEMENTED(g_get_thread_atexit_count_func != nullptr);
+	if (g_get_thread_atexit_count_func != nullptr) {
+		LOGF("WARNING: KernelSetThreadAtexitCount overriding existing handler\n");
+	}
 
 	g_get_thread_atexit_count_func = func;
 }
@@ -1548,7 +1581,9 @@ void KYTY_SYSV_ABI KernelSetThreadAtexitCount(get_thread_atexit_count_func_t fun
 void KYTY_SYSV_ABI KernelSetThreadAtexitReport(thread_atexit_report_func_t func) {
 	PRINT_NAME();
 
-	EXIT_NOT_IMPLEMENTED(g_thread_atexit_report_func != nullptr);
+	if (g_thread_atexit_report_func != nullptr) {
+		LOGF("WARNING: KernelSetThreadAtexitReport overriding existing handler\n");
+	}
 
 	g_thread_atexit_report_func = func;
 }
@@ -1676,6 +1711,12 @@ int KYTY_SYSV_ABI mkdir(const char* path, uint16_t mode) {
 	PRINT_NAME();
 
 	return POSIX_CALL(LibKernel::FileSystem::KernelMkdir(path, mode));
+}
+
+int KYTY_SYSV_ABI rename(const char* from, const char* to) {
+	PRINT_NAME();
+
+	return POSIX_CALL(LibKernel::FileSystem::KernelRename(from, to));
 }
 
 int64_t KYTY_SYSV_ABI lseek(int d, int64_t offset, int whence) {
@@ -1810,16 +1851,92 @@ uint64_t KYTY_SYSV_ABI cfwBSQyr5Ys(uint64_t a1, uint64_t a2, uint64_t a3, uint64
 	return 0;
 }
 
+// libKernel's address-wait primitives are the PS5's futex-style wait/wake: a thread parks on a
+// guest address until another thread wakes that address. Unity's job system and Boehm GC build
+// their own spinlocks on top of these and call them in hot loops; when the wait returns
+// immediately the runtime busy-spins forever and never makes progress.
+//
+// The real wait takes a compare value so it only sleeps while the address still holds the
+// expected value. That value isn't recovered here, so each wait is a spurious-wakeup-tolerant
+// park with a bounded deadline: a genuinely missed wake self-heals when the deadline expires and
+// the guest re-checks its own condition, which futex callers already tolerate.
+namespace {
+
+struct SyncAddressSlot {
+	std::mutex              mutex;
+	std::condition_variable cv;
+	uint64_t                generation = 0;
+};
+
+std::mutex                                                     g_sync_address_mutex;
+std::unordered_map<uint64_t, std::unique_ptr<SyncAddressSlot>> g_sync_address_slots;
+
+SyncAddressSlot* GetSyncAddressSlot(uint64_t address) {
+	std::scoped_lock lock(g_sync_address_mutex);
+	auto&            slot = g_sync_address_slots[address];
+	if (!slot) {
+		slot = std::make_unique<SyncAddressSlot>();
+	}
+	return slot.get();
+}
+
+// Bounds how long a wait that raced with its wake stays parked. Kept large: a short interval
+// turns every parked waiter into a hot re-poll that steals CPU from the threads making progress.
+constexpr auto SYNC_ADDRESS_SELF_HEAL = std::chrono::milliseconds(100);
+
+} // namespace
+
+uint64_t KYTY_SYSV_ABI KernelSyncOnAddressWait(uint64_t address, uint64_t /*value*/,
+                                               uint64_t /*size*/, uint64_t /*timeout*/,
+                                               uint64_t /*flags*/) {
+	if (address == 0) {
+		return static_cast<uint64_t>(LibKernel::KERNEL_ERROR_EINVAL);
+	}
+
+	auto*                        slot = GetSyncAddressSlot(address);
+	std::unique_lock<std::mutex> lock(slot->mutex);
+	const auto                   observed = slot->generation;
+	slot->cv.wait_for(lock, SYNC_ADDRESS_SELF_HEAL,
+	                  [slot, observed] { return slot->generation != observed; });
+	return OK;
+}
+
+uint64_t KYTY_SYSV_ABI KernelSyncOnAddressWake(uint64_t address, uint64_t count,
+                                               uint64_t /*a3*/, uint64_t /*a4*/, uint64_t /*a5*/) {
+	if (address == 0) {
+		return static_cast<uint64_t>(LibKernel::KERNEL_ERROR_EINVAL);
+	}
+
+	auto* slot = GetSyncAddressSlot(address);
+	{
+		// Bump the generation before signalling so a waiter that registered but has not yet
+		// parked observes the change instead of missing this wake.
+		std::scoped_lock lock(slot->mutex);
+		slot->generation++;
+	}
+	// rsi carries the number of waiters to release (1 = wake-one); anything else wakes all.
+	if (count == 1) {
+		slot->cv.notify_one();
+	} else {
+		slot->cv.notify_all();
+	}
+	return OK;
+}
+
 uint64_t KYTY_SYSV_ABI KernelSyncOnAddressV1(uint64_t op, uint64_t address, uint64_t value,
                                              uint64_t size, uint64_t timeout, uint64_t flags) {
 	static std::atomic_uint32_t log_count = 0;
 	const auto                  index     = log_count.fetch_add(1, std::memory_order_relaxed);
 
 	if (index < 16) {
+		uintptr_t teb = 0;
+#if KYTY_PLATFORM == KYTY_PLATFORM_WINDOWS
+		asm volatile("movq %%gs:0x30, %0" : "=r"(teb));
+#endif
 		LOGF("\t libkernel_sync_on_address_v1: op=0x%016" PRIx64 ", address=0x%016" PRIx64
 		     ", value=0x%016" PRIx64 ", size=0x%016" PRIx64 ", timeout=0x%016" PRIx64
-		     ", flags=0x%016" PRIx64 "\n",
-		     op, address, value, size, timeout, flags);
+		     ", flags=0x%016" PRIx64 ", TEB=0x%016" PRIx64 "\n",
+		     op, address, value, size, timeout, flags, teb);
 	}
 
 	if (op != 0 && address == 0 && value == 0 && size == 0) {
@@ -1832,7 +1949,65 @@ uint64_t KYTY_SYSV_ABI KernelSyncOnAddressV1(uint64_t op, uint64_t address, uint
 	return 0;
 }
 
+static KYTY_SYSV_ABI int rmdir(const char* path) {
+	PRINT_NAME();
+	LOGF("\t path = %s\n", path);
+	return 0;
+}
+
+static KYTY_SYSV_ABI int mkdir_stub(const char* path, uint16_t mode) {
+	PRINT_NAME();
+	LOGF("\t path = %s, mode = %u\n", path, mode);
+	return 0;
+}
+
+static KYTY_SYSV_ABI int utimes(const char* path, const void* times) {
+	PRINT_NAME();
+	LOGF("\t path = %s\n", path);
+	return 0;
+}
+
+static KYTY_SYSV_ABI int64_t sendto(int s, const void* msg, uint64_t len, int flags, const void* to, uint32_t tolen) {
+	PRINT_NAME();
+	LOGF("\t s = %d, len = %" PRIu64 "\n", s, len);
+	return len;
+}
+
+static KYTY_SYSV_ABI int64_t recvfrom(int s, void* buf, uint64_t len, int flags, void* from, uint32_t* fromlen) {
+	PRINT_NAME();
+	LOGF("\t s = %d, len = %" PRIu64 "\n", s, len);
+	return 0;
+}
+
+static KYTY_SYSV_ABI int getpeername(int s, void* name, uint32_t* namelen) {
+	PRINT_NAME();
+	LOGF("\t s = %d\n", s);
+	return 0;
+}
+
+static KYTY_SYSV_ABI int shutdown(int s, int how) {
+	PRINT_NAME();
+	LOGF("\t s = %d, how = %d\n", s, how);
+	return 0;
+}
+
+static KYTY_SYSV_ABI int socketpair(int domain, int type, int protocol, int sv[2]) {
+	PRINT_NAME();
+	LOGF("\t sv = %p\n", reinterpret_cast<void*>(sv));
+	return 0;
+}
+
 LIB_DEFINE(InitLibKernel_1_Posix) {
+	LIB_FUNC("c7ZnT7V1B98", Posix::rmdir);
+	LIB_FUNC("n01yNbQO5W4", Posix::mkdir_stub);
+	LIB_FUNC("+0EDo7YzcoU", Posix::utimes);
+	LIB_FUNC("GDuV00CHrUg", Posix::utimes);
+	LIB_FUNC("TXFFFiNldU8", Posix::sendto);
+	LIB_FUNC("TUuiYS2kE8s", Posix::recvfrom);
+	LIB_FUNC("lUk6wrGXyMw", Posix::getpeername);
+	LIB_FUNC("aNeavPDNKzA", Posix::shutdown);
+	LIB_FUNC("hI7oVeOluPM", Posix::socketpair);
+
 	LIB_FUNC("k+AXqu2-eBc", getpagesize);
 	LIB_FUNC("lLMT9vJAck0", clock_gettime);
 	LIB_FUNC("smIj7eqzZE8", clock_getres);
@@ -1841,6 +2016,7 @@ LIB_DEFINE(InitLibKernel_1_Posix) {
 	LIB_FUNC("yS8U2TGCe1A", nanosleep);
 	LIB_FUNC("E6ao34wPw+U", stat);
 	LIB_FUNC("JGMio+21L4c", mkdir);
+	LIB_FUNC("NN01qLRhiqU", Posix::rename);
 	LIB_FUNC("pDuPEf3m4fI", Posix::sem_init);
 	LIB_FUNC("cDW233RAwWo", Posix::sem_destroy);
 	LIB_FUNC("YCV5dGGBcCo", Posix::sem_wait);
@@ -2990,9 +3166,14 @@ LIB_DEFINE(InitLibKernel_1_Pthread) {
 	LIB_FUNC("z0dtnPxYgtg", chmod);
 	LIB_FUNC("VAzswvTOCzI", FileSystem::KernelUnlink);
 	LIB_FUNC("JGMio+21L4c", Posix::mkdir);
-	LIB_FUNC("wuCroIGjt2g", FileSystem::KernelOpen);
-	LIB_FUNC("bY-PO6JhzhQ", FileSystem::KernelClose);
-	LIB_FUNC("FN4gaPmuFV8", FileSystem::KernelWrite);
+	// These are the POSIX-named exports (open/close/write), not the sceKernel* variants
+	// (sceKernelOpen is 1G3lF1Gg1k8). They must report failure as -1 with errno set: libc
+	// callers store the raw 0x8002xxxx sentinel as a valid fd/handle and later dereference
+	// it, which is the null-pointer fault Unity's IL2CPP file layer hits when it probes an
+	// absent file (il2cpp.usym, UnitySubsystems).
+	LIB_FUNC("wuCroIGjt2g", LibKernel::open);
+	LIB_FUNC("bY-PO6JhzhQ", LibKernel::close);
+	LIB_FUNC("FN4gaPmuFV8", LibKernel::write);
 }
 
 static void AddLibkernelUnityFunc(Loader::SymbolDatabase* s, const char* nid, uint64_t func,
@@ -3059,6 +3240,7 @@ LIB_DEFINE(InitLibKernel_1) {
 	LIB_FUNC("NNtFaKJbPt0", LibKernel::close);
 	LIB_FUNC("OMDRKKAZ8I4", LibKernel::KernelDebugRaiseException);
 	LIB_FUNC("Ou3iL1abvng", LibKernel::stack_chk_fail);
+	LIB_FUNC("WslcK1FQcGI", LibKernel::KernelIsNeoMode);
 	LIB_FUNC("p5EcQeEeJAE", LibKernel::KernelRtldSetApplicationHeapAPI);
 	LIB_FUNC("pB-yGZ2nQ9o", LibKernel::KernelSetThreadAtexitCount);
 	LIB_FUNC("py6L8jiVAN8", LibKernel::KernelGetSanitizerMallocReplaceExternal);
@@ -3075,8 +3257,10 @@ LIB_DEFINE(InitLibKernel_1) {
 	LIB_FUNC("Xjoosiw+XPI", LibKernel::KernelUuidCreate);
 	LIB_FUNC("DLORcroUqbc", LibKernel::KernelGetOpenPsId);
 	LIB_FUNC("zE-wXIZjLoM", LibKernel::KernelDebugRaiseExceptionOnReleaseMode);
-	LIB_FUNC("Hc4CaR6JBL0", Posix::KernelSyncOnAddressV1);
-	LIB_FUNC("q2y-wDIVWZA", Posix::KernelSyncOnAddressV1);
+	// sceKernelSyncOnAddressWait / sceKernelSyncOnAddressWake: a real futex pair, not a
+	// single no-op entry point. Stubbing these makes Unity's job system busy-spin forever.
+	LIB_FUNC("Hc4CaR6JBL0", Posix::KernelSyncOnAddressWait);
+	LIB_FUNC("q2y-wDIVWZA", Posix::KernelSyncOnAddressWake);
 
 	AddLibkernelUnityFunc(s, "Qhv5ARAoOEc",
 	                      reinterpret_cast<uint64_t>(LibKernel::KernelRemoveExceptionHandler),

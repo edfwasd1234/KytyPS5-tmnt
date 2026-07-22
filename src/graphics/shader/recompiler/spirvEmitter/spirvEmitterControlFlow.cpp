@@ -465,9 +465,17 @@ void EmitInstruction(EmitterState* state, const IR::Instruction& inst) {
 		case IR::Opcode::BitFieldMaskU32: EmitBitFieldMaskU32(state, inst); break;
 		case IR::Opcode::BitFieldMaskU64: EmitBitFieldMaskU64(state, inst); break;
 		case IR::Opcode::BitFieldExtractU32: EmitBitFieldExtractU32(state, inst); break;
+		case IR::Opcode::BitFieldExtractI32: EmitBitFieldExtractI32(state, inst); break;
 		case IR::Opcode::BitFieldExtractU64: EmitBitFieldExtractU64(state, inst); break;
 		case IR::Opcode::BitFieldExtract3U32: EmitBitFieldExtract3U32(state, inst, false); break;
 		case IR::Opcode::BitFieldExtract3I32: EmitBitFieldExtract3U32(state, inst, true); break;
+		case IR::Opcode::SignExtendI8: EmitSignExtendI8(state, inst); break;
+		case IR::Opcode::SignExtendI16: EmitSignExtendI16(state, inst); break;
+		case IR::Opcode::AbsdiffI32: EmitAbsdiffI32(state, inst); break;
+		case IR::Opcode::AlignByteB32: EmitAlignByteB32(state, inst); break;
+		case IR::Opcode::PermB32: EmitPermB32(state, inst); break;
+		case IR::Opcode::PackI16ToI32: EmitPackI16ToI32(state, inst); break;
+		case IR::Opcode::FractF16: EmitFractF16(state, inst); break;
 		case IR::Opcode::BitFieldInsertSelectU32: EmitBitFieldInsertSelectU32(state, inst); break;
 		case IR::Opcode::BitCompare0B32: EmitBitCompareB32(state, inst, false); break;
 		case IR::Opcode::BitCompare1B32: EmitBitCompareB32(state, inst, true); break;

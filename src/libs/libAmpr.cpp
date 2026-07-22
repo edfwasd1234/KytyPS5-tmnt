@@ -499,6 +499,18 @@ static int WriteResult(void* result, int32_t execution_result = 0, uint32_t erro
 
 } // namespace AprShared
 
+// PS5 exposes PFS inode numbers through stat()/dirents, and APR commands reference files by
+// those inos. Resolve (and register) a guest path so stat/fstat/dirent inos and APR file ids
+// agree. Returns 0 when the path cannot be resolved.
+uint32_t AprResolveGuestPathId(const char* guest_path) {
+	uint32_t id = 0;
+	if (guest_path == nullptr ||
+	    AprShared::ResolveOnePath(guest_path, &id, nullptr) != OK) {
+		return 0;
+	}
+	return id;
+}
+
 namespace LibAmpr::Ampr {
 static int ExecuteAprCommandBuffer(uint64_t command_buffer, int32_t* execution_result,
                                    uint32_t* error_offset);

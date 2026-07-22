@@ -254,9 +254,17 @@ std::string InstructionToString(const Instruction& inst) {
 		case Opcode::BitFieldMaskU32: text += "BitFieldMaskU32"; break;
 		case Opcode::BitFieldMaskU64: text += "BitFieldMaskU64"; break;
 		case Opcode::BitFieldExtractU32: text += "BitFieldExtractU32"; break;
+		case Opcode::BitFieldExtractI32: text += "BitFieldExtractI32"; break;
 		case Opcode::BitFieldExtractU64: text += "BitFieldExtractU64"; break;
 		case Opcode::BitFieldExtract3U32: text += "BitFieldExtract3U32"; break;
 		case Opcode::BitFieldExtract3I32: text += "BitFieldExtract3I32"; break;
+		case Opcode::SignExtendI8: text += "SignExtendI8"; break;
+		case Opcode::SignExtendI16: text += "SignExtendI16"; break;
+		case Opcode::AbsdiffI32: text += "AbsdiffI32"; break;
+		case Opcode::AlignByteB32: text += "AlignByteB32"; break;
+		case Opcode::PermB32: text += "PermB32"; break;
+		case Opcode::PackI16ToI32: text += "PackI16ToI32"; break;
+		case Opcode::FractF16: text += "FractF16"; break;
 		case Opcode::BitFieldInsertSelectU32: text += "BitFieldInsertSelectU32"; break;
 		case Opcode::BitCompare0B32: text += "BitCompare0B32"; break;
 		case Opcode::BitCompare1B32: text += "BitCompare1B32"; break;

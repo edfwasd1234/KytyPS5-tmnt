@@ -1,4 +1,4 @@
-if (MSVC AND CLANG)
+if (WIN32)
 
 add_library(winpthread SHARED IMPORTED GLOBAL)
 

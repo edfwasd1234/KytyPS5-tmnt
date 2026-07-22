@@ -74,7 +74,7 @@ const char** GetArgv() {
 
 static KYTY_SYSV_ABI void exit(int code) {
 	PRINT_NAME();
-
+	LOGF("[TRACE] LibC::exit called with code %d\n", code);
 	::exit(code);
 }
 
@@ -289,13 +289,59 @@ static KYTY_SYSV_ABI void init_env(const InitEnvParams* params) {
 }
 
 static KYTY_SYSV_ABI int atexit(atexit_func_t func) {
-	PRINT_NAME();
+	// PRINT_NAME();
 
 	if (func != nullptr) {
 		Common::Singleton<CContext>::Instance()->atexit.push_front(func);
 	}
 
 	return 0;
+}
+
+static KYTY_SYSV_ABI void* libc_malloc(uint64_t size) {
+	PRINT_NAME();
+
+	void* ptr = std::malloc(size);
+	LOGF("\t size = %" PRIu64 ", ptr = %p\n", size, ptr);
+	return ptr;
+}
+
+static KYTY_SYSV_ABI void libc_free(void* ptr) {
+	PRINT_NAME();
+
+	LOGF("\t ptr = %p\n", ptr);
+	if (ptr == nullptr) {
+		return;
+	}
+
+	// Guest applications allocate memory via libkernel/direct memory.
+	// Bypassing std::free on guest pointers prevents host heap corruption (0xc0000374)
+	LOGF("[Compat Patch] libc_free: safely ignoring free for guest pointer (%p).\n", ptr);
+}
+
+static KYTY_SYSV_ABI void* libc_realloc(void* ptr, uint64_t size) {
+	PRINT_NAME();
+
+	constexpr uint64_t MAX_SAFE_ALLOC = 2ULL * 1024ULL * 1024ULL * 1024ULL; // 2GB safety cap
+	if (size > MAX_SAFE_ALLOC) {
+		return ptr;
+	}
+
+	if (ptr == nullptr) {
+		return std::malloc(static_cast<size_t>(size));
+	}
+
+	// Allocate new block and copy data to avoid calling std::realloc on guest memory
+	void* new_ptr = std::malloc(static_cast<size_t>(size));
+	if (new_ptr != nullptr && Graphics::HostMemoryIsReadable(reinterpret_cast<uint64_t>(ptr))) {
+		std::memcpy(new_ptr, ptr, std::min<size_t>(static_cast<size_t>(size), 1024));
+	}
+	LOGF("\t ptr = %p, size = %" PRIu64 ", new_ptr = %p\n", ptr, size, new_ptr);
+	return new_ptr ? new_ptr : ptr;
+}
+
+static KYTY_SYSV_ABI uint64_t libc_strlen(const char* str) {
+	return str ? std::strlen(str) : 0;
 }
 
 static KYTY_SYSV_ABI int libc_printf(VA_ARGS) {
@@ -585,7 +631,7 @@ static KYTY_SYSV_ABI int std_execute_once(int* flag, execute_once_func_t func, v
 }
 
 static KYTY_SYSV_ABI int cxa_atexit(cxa_destructor_func_t func, void* arg, void* d) {
-	PRINT_NAME();
+	// PRINT_NAME();
 
 	auto* cc = Common::Singleton<CContext>::Instance();
 
@@ -715,7 +761,9 @@ int KYTY_SYSV_ABI strcmp(const char* s1, const char* s2) {
 }
 
 int KYTY_SYSV_ABI strncmp(const char* s1, const char* s2, size_t n) {
-	return ::strncmp(s1, s2, n);
+	int res = ::strncmp(s1, s2, n);
+	LOGF("strncmp('%s', '%s', %d) = %d\n", s1 ? s1 : "null", s2 ? s2 : "null", (int)n, res);
+	return res;
 }
 
 size_t KYTY_SYSV_ABI strlen(const char* s) {
@@ -870,6 +918,17 @@ LIB_DEFINE(InitLibC_1) {
 	LIB_FUNC("L1SBTkC+Cvw", LibC::abort);
 	LIB_FUNC("9BcDykPmo1I", LibC::libc_error);
 	LIB_FUNC("bzQExy189ZI", LibC::init_env);
+	LIB_FUNC("gQX+4GDQjpM", LibC::libc_malloc);
+	LIB_FUNC("tIhsqj0qsFE", LibC::libc_free);
+	// kiZSXIWd9vg is strcpy, NOT realloc (realloc is Y7aJ1uydPMo). Binding it to realloc
+	// turned every guest strcpy(dest, src) into realloc(dest, (size_t)src): the string was
+	// never copied and each call allocated ~143MB (the bogus "size = 150714184" entries in
+	// old logs), leaving Unity's asset/name strings garbage.
+	LIB_FUNC("kiZSXIWd9vg", LibcInternal::strcpy);
+	LIB_FUNC("Y7aJ1uydPMo", LibC::libc_realloc);
+	LIB_FUNC("j4ViWNHEgww", LibC::libc_strlen);
+	LIB_FUNC("aesyjrHVWy4", LibcInternal::strncmp);
+	LIB_FUNC("MZO7FXyAPU8", LibcInternal::strstr);
 	LIB_FUNC("8G2LB+A3rzg", LibC::atexit);
 	LIB_FUNC("hcuQgD53UxM", LibC::libc_printf);
 	LIB_FUNC("YQ0navp+YIc", LibC::puts);

@@ -9,6 +9,11 @@ namespace LibGen5 {
 
 LIB_VERSION("VideoOut", 1, "VideoOut", 1, 1);
 
+static int KYTY_SYSV_ABI VideoOutDummy() {
+	PRINT_NAME();
+	return 0;
+}
+
 LIB_DEFINE(InitVideoOut_1) {
 	PRINT_NAME_ENABLE(true);
 
@@ -43,6 +48,7 @@ LIB_DEFINE(InitVideoOut_1) {
 	LIB_FUNC("MCJ8SkzsQxY", VideoOut::VideoOutLatencyMeasureSetStartPoint);
 	LIB_FUNC("DYhhWbJSeRg", VideoOut::VideoOutColorSettingsSetGamma);
 	LIB_FUNC("pv9CI5VC+R0", VideoOut::VideoOutAdjustColor);
+	LIB_FUNC("6kPnj51T62Y", VideoOutDummy);
 }
 
 } // namespace LibGen5

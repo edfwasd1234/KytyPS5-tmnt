@@ -2,4 +2,15 @@
 .vs/
 .idea/
 build/
+_Build/
 _Build/vscode-clang/
+
+# Emulator runtime output
+devlog/
+_TempData/
+_DownloadData/
+_Textures/
+*.log
+
+# Local agent/tooling configuration
+.agents/

@@ -181,6 +181,9 @@ static void Execute() {
 }
 
 void Run(const RunOptions& options) {
+	setvbuf(stdout, nullptr, _IONBF, 0);
+	setvbuf(stderr, nullptr, _IONBF, 0);
+
 	if (options.app0_dir.empty()) {
 		EXIT("app0 directory is required\n");
 	}
@@ -200,6 +203,10 @@ void Run(const RunOptions& options) {
 
 	Libs::LibKernel::FileSystem::Mount(options.app0_dir, "/app0");
 	Libs::LibKernel::FileSystem::Mount(options.app0_dir, "/hostapp");
+
+	auto devlog_dir = std::filesystem::current_path() / "devlog";
+	std::filesystem::create_directories(devlog_dir / "app");
+	Libs::LibKernel::FileSystem::Mount(devlog_dir, "/devlog");
 
 	auto param_json = options.app0_dir / "sce_sys" / "param.json";
 	if (Common::File::IsFileExisting(param_json)) {

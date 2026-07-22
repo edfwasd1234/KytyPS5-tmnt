@@ -22,6 +22,12 @@ ShaderSubgroupConfiguration ConfigureShaderSubgroup(const GraphicContext&       
 		const auto expected = SelectGraphicsLaneMaskMode(context, guest_wave_size);
 		if (program.lane_mask_mode != expected || (context.subgroup_size != guest_wave_size &&
 		                                           expected != ShaderLaneMaskMode::PerInvocation)) {
+			if (context.subgroup_size_control_enabled &&
+			    (context.required_subgroup_size_stages & stage) != 0 &&
+			    guest_wave_size >= context.min_subgroup_size &&
+			    guest_wave_size <= context.max_subgroup_size) {
+				return {ShaderSubgroupMode::Controlled, guest_wave_size};
+			}
 			return {};
 		}
 		return {expected == ShaderLaneMaskMode::NativeWave

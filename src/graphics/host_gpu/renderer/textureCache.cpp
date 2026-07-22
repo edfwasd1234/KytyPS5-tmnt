@@ -617,9 +617,12 @@ void TextureCache::RetireImages(const std::vector<CachedImage*>& retire,
 			++it;
 			continue;
 		}
-		const bool sampled      = (*it)->kind == CachedImage::Kind::Texture;
-		const bool storage      = (*it)->kind == CachedImage::Kind::StorageTexture;
-		const bool target       = (*it)->kind == CachedImage::Kind::RenderTarget;
+		const bool sampled = (*it)->kind == CachedImage::Kind::Texture;
+		const bool storage = (*it)->kind == CachedImage::Kind::StorageTexture;
+		// A reallocated depth target is retired like a colour target: it must be clean, and its
+		// tracker ownership must already have been released by the caller.
+		const bool target       = (*it)->kind == CachedImage::Kind::RenderTarget ||
+		                    (*it)->kind == CachedImage::Kind::DepthTarget;
 		const bool native_image = it->get() == native_image_source;
 		if (native_image) {
 			bool source_valid = (*it)->gpu_modified && !(*it)->buffer_modified;
@@ -2436,6 +2439,20 @@ DepthStencilVulkanImage* TextureCache::FindDepthTarget(CommandBuffer* command, G
 					native_depth_source = entry;
 				}
 				break;
+			case DepthOverlap::RetireTarget:
+				// The allocation was reused for a differently shaped depth surface. Depth and
+				// stencil contents are ephemeral and the new surface owns this range, so drop
+				// GPU ownership rather than writing the old image back to guest memory.
+				supported = cached.kind == CachedImage::Kind::DepthTarget;
+				if (supported && cached.gpu_modified) {
+					for (uint32_t range = 0; range < cached.RangeCount(); range++) {
+						m_memory_tracker.ForEachDownloadRange<true>(
+						    cached.Address(range), cached.Size(range),
+						    [](uint64_t, uint64_t) noexcept {});
+					}
+					cached.gpu_modified = false;
+				}
+				break;
 			case DepthOverlap::None:
 			case DepthOverlap::Unsupported: break;
 		}
@@ -3384,15 +3401,28 @@ void TextureCache::RegisterMeta(uint64_t vaddr, uint64_t size, uint32_t layers) 
 	if (existing != m_surface_metas.end()) {
 		const auto slice_size     = size / layers;
 		const auto old_slice_size = existing->second.size / existing->second.layers;
-		if (slice_size != old_slice_size ||
-		    (size > existing->second.size) != (layers > existing->second.layers)) {
-			EXIT("TextureCache: incompatible metadata backing growth\n");
+		const bool compatible_growth =
+		    slice_size == old_slice_size &&
+		    (size > existing->second.size) == (layers > existing->second.layers);
+		if (compatible_growth) {
+			if (layers <= existing->second.layers) {
+				return;
+			}
+			// Only the appended slices are new; the existing range keeps its tracking.
+			range_vaddr += existing->second.size;
+			range_size -= existing->second.size;
+		} else {
+			// Not a growth: the guest reused this allocation for a differently shaped surface.
+			// Re-register the whole range so images overlapping it are retired below, then
+			// replace the entry outright.
+			static std::atomic<uint32_t> log_count {0};
+			if (log_count.fetch_add(1, std::memory_order_relaxed) < 8) {
+				LOGF("TextureCache: metadata at 0x%016" PRIx64
+				     " re-registered with a different shape (0x%016" PRIx64 "/%u -> 0x%016" PRIx64
+				     "/%u); replacing\n",
+				     vaddr, existing->second.size, existing->second.layers, size, layers);
+			}
 		}
-		if (layers <= existing->second.layers) {
-			return;
-		}
-		range_vaddr += existing->second.size;
-		range_size -= existing->second.size;
 	}
 	for (const auto& [address, meta]: m_surface_metas) {
 		if (address != vaddr && PageOverlaps(range_vaddr, range_size, address, meta.size)) {

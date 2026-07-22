@@ -239,6 +239,7 @@ enum : uint32_t {
 	GlslRoundEven      = 2,
 	GlslTrunc          = 3,
 	GlslFAbs           = 4,
+	GlslSAbs           = 5,
 	GlslFloor          = 8,
 	GlslCeil           = 9,
 	GlslFract          = 10,
@@ -1208,9 +1209,19 @@ void EmitBitFieldExtractU64(EmitterState* state, const IR::Instruction& inst);
 
 void EmitBitFieldExtractU32(EmitterState* state, const IR::Instruction& inst);
 
+void EmitBitFieldExtractI32(EmitterState* state, const IR::Instruction& inst);
+
 void EmitBitFieldExtract3U32(EmitterState* state, const IR::Instruction& inst, bool signed_value);
 
 void EmitBitFieldInsertSelectU32(EmitterState* state, const IR::Instruction& inst);
+
+void EmitSignExtendI8(EmitterState* state, const IR::Instruction& inst);
+void EmitSignExtendI16(EmitterState* state, const IR::Instruction& inst);
+void EmitAbsdiffI32(EmitterState* state, const IR::Instruction& inst);
+void EmitAlignByteB32(EmitterState* state, const IR::Instruction& inst);
+void EmitPermB32(EmitterState* state, const IR::Instruction& inst);
+void EmitPackI16ToI32(EmitterState* state, const IR::Instruction& inst);
+void EmitFractF16(EmitterState* state, const IR::Instruction& inst);
 
 void EmitAlignBitU32(EmitterState* state, const IR::Instruction& inst);
 

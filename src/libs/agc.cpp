@@ -1,4 +1,6 @@
 #include "libs/agc.h"
+#define NOMINMAX
+#include <windows.h>
 
 #include "common/assert.h"
 #include "common/emulatorConfig.h"
@@ -134,7 +136,7 @@ struct RegisterDefaultsStorage {
 
 #include <fmt/format.h>
 
-static constexpr uint32_t GRAPHICS_REGISTER_DEFAULTS_MAX_VERSION      = 12;
+static constexpr uint32_t GRAPHICS_REGISTER_DEFAULTS_MAX_VERSION      = 13;
 static constexpr uint32_t GRAPHICS_REGISTER_DEFAULTS_FALLBACK_VERSION = 11;
 static constexpr uint32_t GRAPHICS_INIT_NO_FEATURE_STATE              = 0;
 
@@ -374,6 +376,7 @@ struct Label {
 
 int KYTY_SYSV_ABI GraphicsInit(uint32_t* state, uint32_t ver) {
 	PRINT_NAME();
+	LOGF("\tGraphicsInit: running on thread ID = %lu\n", GetCurrentThreadId());
 
 	LOGF("\t state = 0x%016" PRIx64 "\n"
 	     "\t ver   = %u\n",
@@ -388,11 +391,23 @@ int KYTY_SYSV_ABI GraphicsInit(uint32_t* state, uint32_t ver) {
 		LOGF_COLOR(Log::Color::Red, "\t unsupported version %u\n", ver);
 	}
 
-	printf("version = %u\n", ver);
+	LOGF("\tGraphicsInit: version = %u\n", ver);
 
-	state[0] = ver;
-	state[1] = GRAPHICS_INIT_NO_FEATURE_STATE;
+	// Synchronize with Thread_Window's Vulkan creation
+	LOGF("\tGraphicsInit: waiting for graphic initialized...\n");
+	::Libs::Graphics::WindowWaitForGraphicInitialized();
+	LOGF("\tGraphicsInit: graphic initialized signaled!\n");
 
+	__try {
+		state[0] = ver;
+		state[1] = 0;
+		LOGF("\tGraphicsInit: state written successfully!\n");
+	} __except (1) {
+		LOGF_COLOR(Log::Color::Red, "\t EXCEPTION writing to state pointer 0x%016\" PRIx64 \"\n",
+		     reinterpret_cast<uint64_t>(state));
+	}
+
+	LOGF("\tGraphicsInit: returning OK\n");
 	return OK;
 }
 

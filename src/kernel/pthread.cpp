@@ -795,6 +795,10 @@ static KYTY_SYSV_ABI void* RunOnGuestStack(void* arg, pthread_entry_func_t func,
 	}
 
 	// The guest ABI expects the entry argument in rdi and a 16-byte aligned stack before call.
+	// Guest code MUST run on its guest stack: Unity/Boehm-GC derive scan ranges from the
+	// reported guest stack bounds, and an RSP outside them makes the GC scan gigabytes of
+	// unrelated address space (black-screen hang at startup). The TEB stack bounds are
+	// cleared while on the guest stack so Windows stack probes don't fail.
 	asm volatile("pushq %%r12\n\t"
 	             "pushq %%r13\n\t"
 #if KYTY_PLATFORM == KYTY_PLATFORM_WINDOWS
@@ -909,6 +913,14 @@ void PthreadInitSelfForMainThread() {
 	     g_pthread_self->unique_id, os_thread_id,
 	     reinterpret_cast<uint64_t>(g_pthread_self->attr->stack_addr),
 	     static_cast<uint64_t>(g_pthread_self->attr->stack_size));
+	LOGF("PthreadMutexLock addr: %p\n", reinterpret_cast<void*>(PthreadMutexLock));
+	LOGF("PthreadMutexUnlock addr: %p\n", reinterpret_cast<void*>(PthreadMutexUnlock));
+	LOGF("PthreadMutexInit addr: %p\n", reinterpret_cast<void*>(PthreadMutexInit));
+	LOGF("PthreadCondInit addr: %p\n", reinterpret_cast<void*>(PthreadCondInit));
+	LOGF("PthreadRwlockInit addr: %p\n", reinterpret_cast<void*>(PthreadRwlockInit));
+	LOGF("pthread_self addr: %p\n", reinterpret_cast<void*>(Posix::pthread_self));
+	LOGF("pthread_getspecific addr: %p\n", reinterpret_cast<void*>(Posix::pthread_getspecific));
+	LOGF("pthread_setspecific addr: %p\n", reinterpret_cast<void*>(Posix::pthread_setspecific));
 }
 
 void* PthreadCreateMainGuestStack() {
@@ -1701,6 +1713,7 @@ int KYTY_SYSV_ABI PthreadMutexDestroy(PthreadMutex* mutex) {
 
 int KYTY_SYSV_ABI PthreadMutexLock(PthreadMutex* mutex) {
 	// PRINT_NAME();
+	// LOGF("\t mutex = %p\n", reinterpret_cast<void*>(mutex));
 
 	auto* pthread_static_objects = g_pthread_context->GetPthreadStaticObjects();
 
@@ -1754,7 +1767,8 @@ int KYTY_SYSV_ABI PthreadMutexTrylock(PthreadMutex* mutex) {
 }
 
 int KYTY_SYSV_ABI PthreadMutexTimedlock(PthreadMutex* mutex, KernelUseconds usec) {
-	// PRINT_NAME();
+	PRINT_NAME();
+	LOGF("\t mutex = %p, usec = %" PRIu64 "\n", reinterpret_cast<void*>(mutex), usec);
 
 	auto* pthread_static_objects = g_pthread_context->GetPthreadStaticObjects();
 
@@ -1781,6 +1795,7 @@ int KYTY_SYSV_ABI PthreadMutexTimedlock(PthreadMutex* mutex, KernelUseconds usec
 
 int KYTY_SYSV_ABI PthreadMutexUnlock(PthreadMutex* mutex) {
 	// PRINT_NAME();
+	// LOGF("\t mutex = %p\n", reinterpret_cast<void*>(mutex));
 
 	auto* pthread_static_objects = g_pthread_context->GetPthreadStaticObjects();
 
@@ -4352,7 +4367,9 @@ int KYTY_SYSV_ABI pthread_setspecific(LibKernel::PthreadKey key, void* value) {
 void* KYTY_SYSV_ABI pthread_getspecific(LibKernel::PthreadKey key) {
 	PRINT_NAME();
 
-	return (LibKernel::PthreadGetspecific(key));
+	void* ret = LibKernel::PthreadGetspecific(key);
+	LOGF("\t key = %u, thread_id = %d, ret = %p\n", key, Common::Thread::GetThreadIdUnique(), ret);
+	return ret;
 }
 
 int KYTY_SYSV_ABI pthread_mutex_destroy(LibKernel::PthreadMutex* mutex) {
@@ -4392,11 +4409,18 @@ int KYTY_SYSV_ABI pthread_mutexattr_destroy(LibKernel::PthreadMutexattr* attr) {
 	return POSIX_PTHREAD_CALL(LibKernel::PthreadMutexattrDestroy(attr));
 }
 
-int KYTY_SYSV_ABI pthread_getstack(const LibKernel::PthreadAttr* __restrict attr,
+int KYTY_SYSV_ABI pthread_getstack(LibKernel::Pthread thread,
                                    void** __restrict stack_addr, size_t* __restrict stack_size) {
 	PRINT_NAME();
 
-	return pthread_attr_getstack(attr, stack_addr, stack_size);
+	if (thread == nullptr || thread->attr == nullptr || stack_addr == nullptr || stack_size == nullptr) {
+		return LibKernel::KERNEL_ERROR_EINVAL;
+	}
+
+	*stack_addr = thread->attr->stack_addr;
+	*stack_size = thread->attr->stack_size;
+
+	return OK;
 }
 
 } // namespace Posix

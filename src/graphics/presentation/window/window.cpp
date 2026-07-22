@@ -1,4 +1,6 @@
 #include "graphics/presentation/window.h"
+#define NOMINMAX
+#include <windows.h>
 
 #include "SDL.h"
 #include "SDL_error.h"
@@ -245,7 +247,7 @@ WindowContext* g_window_ctx = nullptr;
 
 constexpr const char* KYTY_SDL_WINDOW_CAPTION = "Game";
 constexpr uint32_t    KYTY_SDL_WINDOW_FLAGS =
-    (static_cast<uint32_t>(SDL_WINDOW_HIDDEN) | static_cast<uint32_t>(SDL_WINDOW_VULKAN));
+    (static_cast<uint32_t>(SDL_WINDOW_SHOWN) | static_cast<uint32_t>(SDL_WINDOW_VULKAN));
 constexpr int KYTY_SDL_WINDOWPOS_CENTERED = SDL_WINDOWPOS_CENTERED; /*NOLINT(hicpp-signed-bitwise)*/
 
 static void CalcFrameTime(WindowGame* game, double game_time_s) {
@@ -260,6 +262,13 @@ static void CalcFrameTime(WindowGame* game, double game_time_s) {
 		game->m_current_fps    = static_cast<double>(game->m_fps_frames_num) / fps_time;
 		game->m_fps_frames_num = 0;
 		game->m_fps_start_time = game->m_current_time_seconds;
+
+		if (g_window_ctx != nullptr && g_window_ctx->window != nullptr) {
+			char title_buf[128];
+			std::snprintf(title_buf, sizeof(title_buf), "TMNT: Mutants Unleashed - PS5 Emulator | FPS: %.1f | Frame: %d",
+			              game->m_current_fps, game->m_frame_num);
+			SDL_SetWindowTitle(g_window_ctx->window, title_buf);
+		}
 	}
 }
 
@@ -355,9 +364,8 @@ void GameShowWindow(WindowGame* game, const Common::Timer& timer) {
 			LOGF("skip frame %d\n", p->skip_frames);
 		} else {
 			VideoOut::VideoOutBeginVblank();
-			if (VideoOut::VideoOutFlipWindow(0)) {
-				CalcFrameTime(game, timer.GetTimeS());
-			}
+			VideoOut::VideoOutFlipWindow(0);
+			CalcFrameTime(game, timer.GetTimeS());
 			VideoOut::VideoOutEndVblank();
 		}
 	}
@@ -913,7 +921,6 @@ void GameMainLoop(WindowGame* game, void* data) {
 
 		if (GamePollEvent(game) != 0) {
 			GameProcessEvent(game, timer.GetTimeS());
-			continue;
 		}
 
 		if (game->m_game_is_paused) {
@@ -946,6 +953,8 @@ void GameMainLoop(WindowGame* game, void* data) {
 			if (!need_exit) {
 				GameShowWindow(game, timer);
 			}
+
+			SDL_Delay(1);
 		}
 	}
 
@@ -975,11 +984,12 @@ static void WindowCreate(WindowContext* ctx) {
 	    SDL_CreateWindow(KYTY_SDL_WINDOW_CAPTION, KYTY_SDL_WINDOWPOS_CENTERED,
 	                     KYTY_SDL_WINDOWPOS_CENTERED, width, height, KYTY_SDL_WINDOW_FLAGS);
 
-	ctx->window_hidden = true;
-
 	if (ctx->window == nullptr) {
 		EXIT("%s\n", SDL_GetError());
 	}
+
+	SDL_ShowWindow(ctx->window);
+	ctx->window_hidden = true;
 
 	SDL_SetWindowResizable(ctx->window, SDL_FALSE);
 }
@@ -1008,6 +1018,7 @@ void WindowRun() {
 	EXIT_IF(g_window_ctx == nullptr);
 
 	KYTY_PROFILER_THREAD("Thread_Window");
+	LOGF("WindowRun starting on thread ID = %lu\n", GetCurrentThreadId());
 
 	WindowGame game;
 

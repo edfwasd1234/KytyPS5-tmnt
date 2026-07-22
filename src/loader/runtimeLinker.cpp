@@ -303,6 +303,7 @@ static KYTY_SYSV_ABI uint64_t ResolveImportStubWithId(uint64_t record_id) {
 		if (record_id < g_stubbed_imports.size()) {
 			const auto& record = g_stubbed_imports[record_id];
 			printf("Unresolved import stub called: %s\n", record.name.c_str());
+			fflush(stdout);
 			LOGF("Unresolved import stub called [%u]: patch_vaddr=0x%016" PRIx64
 			     " jmprela_index=%" PRIu32 " symbol=%s type=%s bind=%s program=%s\n",
 			     log_index, record.patch_vaddr, record.index, record.name.c_str(),
@@ -310,6 +311,7 @@ static KYTY_SYSV_ABI uint64_t ResolveImportStubWithId(uint64_t record_id) {
 			     record.program.c_str());
 		} else {
 			printf("Unresolved import stub called: <bad-record>\n");
+			fflush(stdout);
 			LOGF("Unresolved import stub called [%u]: record_id=%" PRIu64 " symbol=<bad-record>\n",
 			     log_index, record_id);
 		}
@@ -368,10 +370,13 @@ static KYTY_SYSV_ABI void RunEntry(uint64_t addr, EntryParams* params, atexit_fu
 
 	asm volatile("pushq %%r12\n\t"
 	             "pushq %%r13\n\t"
-	             "movq %%rbp, %%r12\n\t"
+	             "movq %%rsp, %%r12\n\t"
+	             "movq %%rbp, %%r13\n\t"
+	             "andq $-16, %%rsp\n\t"
 	             "movq %[guest_rbp], %%rbp\n\t"
 	             "callq *%[func]\n\t"
-	             "movq %%r12, %%rbp\n\t"
+	             "movq %%r13, %%rbp\n\t"
+	             "movq %%r12, %%rsp\n\t"
 	             "popq %%r13\n\t"
 	             "popq %%r12\n\t"
 	             :
@@ -521,9 +526,55 @@ static bool KytyExceptionHandler(const Common::HostException::ExceptionInfo& exc
 			return true;
 		}
 
-		if (Libs::LibKernel::Memory::KernelHandleReservedRangeAccessViolation(
-		        info->access_violation_vaddr)) {
-			return true;
+		if (info->access_violation_type == Common::HostException::AccessViolationType::Read ||
+		    info->access_violation_type == Common::HostException::AccessViolationType::Write) {
+#if KYTY_PLATFORM == KYTY_PLATFORM_WINDOWS
+			uint64_t page_addr = info->access_violation_vaddr & ~UINT64_C(0xFFF);
+			void* target_ptr = reinterpret_cast<void*>(page_addr);
+			MEMORY_BASIC_INFORMATION mbi {};
+			bool success = false;
+			if (VirtualQuery(target_ptr, &mbi, sizeof(mbi)) != 0) {
+				if (mbi.State == MEM_COMMIT) {
+					DWORD old_prot = 0;
+					success = (VirtualProtect(target_ptr, 0x1000, PAGE_READWRITE, &old_prot) != 0);
+					if (success) {
+						LOGF("[VEH] unprotected committed page 0x%016" PRIx64
+						     " (old prot 0x%08lx) after %s fault at rip=0x%016" PRIx64 "\n",
+						     page_addr, old_prot,
+						     info->access_violation_type ==
+						             Common::HostException::AccessViolationType::Write
+						         ? "write"
+						         : "read",
+						     info->rsp != 0 && info->native_context != nullptr
+						         ? static_cast<PCONTEXT>(info->native_context)->Rip
+						         : 0);
+					}
+				} else if (mbi.State == MEM_RESERVE) {
+					// Demand-commit for lazily reserved allocations. Commit a large chunk
+					// (bounded by the reserved block) instead of one page: conservative GC
+					// scans touch big ranges and a VEH round-trip per 4K page is a fault storm.
+					// Placeholder-backed reserves reject plain VirtualAlloc, which is correct:
+					// those must be mapped by the emulator's own machinery, not here.
+					const uint64_t region_end =
+					    reinterpret_cast<uint64_t>(mbi.BaseAddress) + mbi.RegionSize;
+					const uint64_t chunk =
+					    std::min<uint64_t>(UINT64_C(0x400000), region_end - page_addr);
+					success = (VirtualAlloc(target_ptr, chunk, MEM_COMMIT, PAGE_READWRITE) != nullptr);
+				}
+				// MEM_FREE: never allocate here. Committing at arbitrary faulted addresses
+				// steals address space from the flexible-memory allocator (it caused Unity's
+				// flip/workload thread stacks to fail mapping => permanent black screen).
+			}
+			if (success) {
+				return true;
+			}
+
+			// Do NOT skip the faulting instruction. Skipping desyncs guest state and turns a
+			// diagnosable crash into silent corruption; fall through to the crash dump below.
+			LOGF("[VEH] unhandled %s fault at 0x%016" PRIx64 " (page state 0x%08lx, prot 0x%08lx)\n",
+			     Common::EnumName(info->access_violation_type).c_str(),
+			     info->access_violation_vaddr, mbi.State, mbi.Protect);
+#endif
 		}
 	}
 
@@ -709,10 +760,24 @@ static bool KytyExceptionHandler(const Common::HostException::ExceptionInfo& exc
 				return;
 			}
 
-			auto* q = reinterpret_cast<const uint64_t*>(addr);
-			LOGF("%s = %016" PRIx64 ": %016" PRIx64 " %016" PRIx64 " %016" PRIx64 " %016" PRIx64
-			     " %016" PRIx64 " %016" PRIx64 " %016" PRIx64 " %016" PRIx64 "\n",
-			     name, addr, q[0], q[1], q[2], q[3], q[4], q[5], q[6], q[7]);
+			__try {
+				auto* q = reinterpret_cast<const uint64_t*>(addr);
+				LOGF("%s = %016" PRIx64 ": %016" PRIx64 " %016" PRIx64 " %016" PRIx64 " %016" PRIx64
+				     " %016" PRIx64 " %016" PRIx64 " %016" PRIx64 " %016" PRIx64 "\n",
+				     name, addr, q[0], q[1], q[2], q[3], q[4], q[5], q[6], q[7]);
+				if (is_readable_range(addr, 192)) {
+					char        ascii[193] = {};
+					const auto* bytes      = reinterpret_cast<const uint8_t*>(addr);
+					for (int bi = 0; bi < 192; bi++) {
+						ascii[bi] = (bytes[bi] >= 0x20 && bytes[bi] < 0x7f)
+						                ? static_cast<char>(bytes[bi])
+						                : '.';
+					}
+					LOGF("%s ascii: %s\n", name, ascii);
+				}
+			} __except (EXCEPTION_EXECUTE_HANDLER) {
+				LOGF("%s = %016" PRIx64 " (access violation during dump)\n", name, addr);
+			}
 		};
 
 		dump_guest_qwords("guest rbx", info->rbx);
@@ -734,6 +799,8 @@ static bool KytyExceptionHandler(const Common::HostException::ExceptionInfo& exc
 			dump_guest_qwords("vorbis obj", local[0]);
 			dump_guest_qwords("vorbis len", info->rcx);
 		}
+
+		return false;
 
 		EXIT("Access violation: %s [%016" PRIx64 "] %s\n",
 		     Common::EnumName(info->access_violation_type).c_str(), info->access_violation_vaddr,
@@ -976,17 +1043,9 @@ static void RelocateRecord(uint32_t index, Elf64_Rela* r, Program* program, bool
 	// KYTY_PROFILER_END_BLOCK;
 
 	if (patched && stubbed_import) {
-		const auto thunk = RegisterStubbedImport(index, program, ri);
-		LOGF("Relocate: unresolved PLT import patched to stub [%u] [%016" PRIx64 "] <- %016" PRIx64
-		     ", %s, %s, %s, %s\n",
-		     index, ri.vaddr, thunk, ri.name.c_str(), Common::EnumName(ri.type).c_str(),
-		     Common::EnumName(ri.bind).c_str(), Common::PathToString(program->file_name).c_str());
+		RegisterStubbedImport(index, program, ri);
 	} else if (patched && stubbed_func) {
-		const auto thunk = RegisterStubbedImport(index, program, ri);
-		LOGF("Relocate: unresolved non-PLT function patched to stub [%u] [%016" PRIx64
-		     "] <- %016" PRIx64 ", %s, %s, %s, %s\n",
-		     index, ri.vaddr, thunk, ri.name.c_str(), Common::EnumName(ri.type).c_str(),
-		     Common::EnumName(ri.bind).c_str(), Common::PathToString(program->file_name).c_str());
+		RegisterStubbedImport(index, program, ri);
 	}
 
 	if (program->dbg_print_reloc) {
@@ -1067,8 +1126,6 @@ static void PatchProgram(Program* program, uint64_t address, uint64_t size) {
 
 		for (auto* ptr = start_ptr; ptr <= end_ptr; ptr++) {
 			if (memcmp(ptr, fs_store_pattern, sizeof(fs_store_pattern)) == 0) {
-				LOGF("Patch fs:[0x28] store at addr: [%016" PRIx64 "]\n",
-				     reinterpret_cast<uint64_t>(ptr));
 				if (ptr + 16 < start_ptr + size && ptr[12] == 0xcd && ptr[13] == 0x45 &&
 				    ptr[14] == 0x90 && ptr[15] == 0x0f && ptr[16] == 0x0b) {
 					ptr[0] = 0x5d; // pop rbp
@@ -1113,8 +1170,6 @@ static void PatchProgram(Program* program, uint64_t address, uint64_t size) {
 			if (memcmp(inst_ptr, tls_pattern, 3) == 0 && (modrm & 0xc7u) == 0x04u &&
 			    inst_ptr[4] == tls_pattern[4] &&
 			    *reinterpret_cast<const uint32_t*>(inst_ptr + 5) == 0) {
-				LOGF("Patch tls at addr: [%016" PRIx64 "]\n", reinterpret_cast<uint64_t>(ptr));
-
 				const auto reg = (modrm >> 3u) & 7u;
 				EXIT_NOT_IMPLEMENTED(reg == 4u);
 
@@ -1357,9 +1412,36 @@ void RuntimeLinker::Execute() {
 		    (reinterpret_cast<uintptr_t>(main_stack_top) - 0x100u) & ~static_cast<uintptr_t>(0x0f));
 		std::memset(params, 0, sizeof(EntryParams));
 		params->argc    = 1;
-		params->argv[0] = "KytyEmu";
+		params->argv[0] = "/app0/eboot.bin";
 
 		LOGF("stack_addr = %" PRIx64 "\n", reinterpret_cast<uint64_t>(params));
+
+		bool is_undertale = false;
+		for (const auto* p: m_programs) {
+			if (p->elf != nullptr && !p->elf->IsShared()) {
+				if (p->file_name.string().find("Undertale") != std::string::npos) {
+					is_undertale = true;
+				}
+			}
+		}
+
+
+		if (is_undertale) {
+			// Hook check_path at 0x9000f9a10
+			struct LocalHook {
+				static bool KYTY_SYSV_ABI HookCheckPath(void* obj, const char* path) {
+					LOGF("HookCheckPath(obj = %p, path = '%s')\n", obj, path ? path : "null");
+					return true;
+				}
+			};
+			uint8_t* hook_dest = reinterpret_cast<uint8_t*>(0x9000f9a10);
+			DWORD old_protect = 0;
+			VirtualProtect(hook_dest, 16, PAGE_EXECUTE_READWRITE, &old_protect);
+			*reinterpret_cast<uint16_t*>(hook_dest) = 0x25ff;
+			*reinterpret_cast<uint32_t*>(hook_dest + 2) = 0;
+			*reinterpret_cast<uint64_t*>(hook_dest + 6) = reinterpret_cast<uint64_t>(&LocalHook::HookCheckPath);
+			VirtualProtect(hook_dest, 16, old_protect, &old_protect);
+		}
 
 		RunEntry(entry, params, ProgramExitHandler,
 		         reinterpret_cast<void*>(reinterpret_cast<uintptr_t>(params) - 0x1000u));
@@ -1661,7 +1743,7 @@ void RuntimeLinker::StartAllModules() {
 		bool progressed = false;
 
 		for (auto* p: m_programs) {
-			if (p->elf->IsShared() && p->dynamic_info->init_vaddr != 0 &&
+			if (p->elf->IsShared() && (p->dynamic_info->init_vaddr != 0 || p->dynamic_info->init_array_vaddr != 0) &&
 			    std::find(started.begin(), started.end(), p) == started.end() &&
 			    ModuleStartDependenciesSatisfied(p, m_programs, started)) {
 				StartModule(p, 0, nullptr, nullptr);
@@ -1676,7 +1758,7 @@ void RuntimeLinker::StartAllModules() {
 	}
 
 	for (auto* p: m_programs) {
-		if (p->elf->IsShared() && p->dynamic_info->init_vaddr != 0 &&
+		if (p->elf->IsShared() && (p->dynamic_info->init_vaddr != 0 || p->dynamic_info->init_array_vaddr != 0) &&
 		    std::find(started.begin(), started.end(), p) == started.end()) {
 			StartModule(p, 0, nullptr, nullptr);
 			started.push_back(p);
@@ -1775,8 +1857,25 @@ int RuntimeLinker::StartModule(Program* program, size_t args, const void* argp,
 	LOGF_COLOR(Log::Color::BrightYellow, "---\n--- Start module: %s\n---\n",
 	           Common::PathToString(program->file_name).c_str());
 
-	return reinterpret_cast<module_ini_fini_func_t>(program->dynamic_info->init_vaddr +
-	                                                program->base_vaddr)(args, argp, func);
+	int result = 0;
+	if (program->dynamic_info->init_vaddr != 0) {
+		result = reinterpret_cast<module_ini_fini_func_t>(program->dynamic_info->init_vaddr +
+		                                                program->base_vaddr)(args, argp, func);
+	}
+
+	if (program->dynamic_info->init_array_vaddr != 0 && program->dynamic_info->init_array_size != 0) {
+		auto* init_array = reinterpret_cast<uint64_t*>(program->dynamic_info->init_array_vaddr + program->base_vaddr);
+		size_t count = program->dynamic_info->init_array_size / 8;
+		LOGF("Executing %d init_array constructors for %s\n", (int)count, Common::PathToString(program->file_name).c_str());
+		for (size_t i = 0; i < count; ++i) {
+			if (init_array[i] != 0) {
+				auto init_func = reinterpret_cast<void (*)()>(init_array[i]);
+				init_func();
+			}
+		}
+	}
+
+	return result;
 }
 
 int RuntimeLinker::StopModule(Program* program, size_t args, const void* argp, module_func_t func) {
@@ -1876,7 +1975,7 @@ void RuntimeLinker::LoadProgramToMemory(Program* program) {
 	bool is_shared   = program->elf->IsShared();
 	bool is_next_gen = program->elf->IsNextGen();
 
-	EXIT_NOT_IMPLEMENTED(!is_shared && !is_next_gen);
+	// EXIT_NOT_IMPLEMENTED(!is_shared && !is_next_gen);
 
 	const auto* ehdr = program->elf->GetEhdr();
 	const auto* phdr = program->elf->GetPhdr();

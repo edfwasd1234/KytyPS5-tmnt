@@ -175,7 +175,7 @@ struct VideoOutPixelFormatInfo {
 	return rgba8 || rgb10;
 }
 
-enum class DepthOverlap : uint8_t { None, RetireSampled, ExpandTarget, Unsupported };
+enum class DepthOverlap : uint8_t { None, RetireSampled, ExpandTarget, RetireTarget, Unsupported };
 enum class DepthTransitionSource : uint8_t { None, Guest, Native };
 enum class RenderTargetOverlap : uint8_t {
 	None,
@@ -674,8 +674,26 @@ ClassifyRenderTargetOverlap(const RenderTargetInfo& cached, bool cached_gpu_modi
 	}
 	const bool expand =
 	    requested.layers > cached.layers && IsCompatibleDepthTargetBacking(requested, cached);
-	return expand && cached_gpu_modified && !cached_buffer_modified && same_context
-	           ? DepthOverlap::ExpandTarget
+	if (expand && cached_gpu_modified && !cached_buffer_modified && same_context) {
+		return DepthOverlap::ExpandTarget;
+	}
+	// Mirrors the colour-target case: for an equal-address allocation-pool entry, a changed
+	// storage shape means the guest reused the allocation for a new depth surface rather than
+	// viewing the old one. An unmodified, page-isolated target can simply be retired.
+	const bool page_isolated =
+	    cached.address % TRACKER_PAGE_SIZE == 0 && cached.size % TRACKER_PAGE_SIZE == 0 &&
+	    requested.address % TRACKER_PAGE_SIZE == 0 && requested.size % TRACKER_PAGE_SIZE == 0;
+	const bool pool_storage_shape_changed =
+	    cached.pitch != requested.pitch || cached.width != requested.width ||
+	    cached.height != requested.height || cached.size != requested.size ||
+	    cached.bytes_per_element != requested.bytes_per_element ||
+	    cached.format != requested.format;
+	// Unlike a colour target, a GPU-modified depth target does not block this: depth and stencil
+	// contents are ephemeral, and the caller releases the range's GPU ownership before retiring
+	// rather than writing the old surface back to guest memory.
+	return cached.address == requested.address && page_isolated && pool_storage_shape_changed &&
+	               !cached_buffer_modified && same_context
+	           ? DepthOverlap::RetireTarget
 	           : DepthOverlap::Unsupported;
 }
 

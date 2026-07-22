@@ -287,6 +287,30 @@ LIB_DEFINE(InitGraphicsDriver_1) {
 
 } // namespace LibGen5
 
+namespace LibGnmDriver {
+
+LIB_VERSION("libGnmDriver_v1", 1, "GnmDriver_v1", 1, 1);
+
+static int KYTY_SYSV_ABI GnmDriverStub(uint64_t arg0, uint64_t arg1, uint64_t arg2, uint64_t arg3) {
+	PRINT_NAME();
+	(void)arg0;
+	(void)arg1;
+	(void)arg2;
+	(void)arg3;
+	return 0;
+}
+
+LIB_DEFINE(InitGnmDriver_1) {
+	PRINT_NAME_ENABLE(true);
+
+	LIB_FUNC("yb2cRhagD1I", GnmDriverStub);
+	LIB_FUNC("1qXLHIpROPE", GnmDriverStub);
+	LIB_FUNC("xbxNatawohc", GnmDriverStub);
+	LIB_FUNC("yvZ73uQUqrk", GnmDriverStub);
+}
+
+} // namespace LibGnmDriver
+
 namespace LibGen5Driver {
 
 LIB_VERSION("Graphics5Driver", 1, "Graphics5Driver", 1, 1);
@@ -318,7 +342,9 @@ LIB_DEFINE(InitGraphicsDriver_1) {
 
 LIB_DEFINE(InitGraphicsDriver_1) {
 	LibGen5::InitGraphicsDriver_1(s);
+	LibGnmDriver::InitGnmDriver_1(s);
 	LibGen5Driver::InitGraphicsDriver_1(s);
 }
 
 } // namespace Libs
+

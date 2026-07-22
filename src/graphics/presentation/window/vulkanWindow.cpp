@@ -230,7 +230,28 @@ static VulkanQueues VulkanFindQueues(VkPhysicalDevice device, VkSurfaceKHR surfa
 	};
 
 	select_queues(graphics_num, [](const auto& q) { return q.graphics; }, qs.graphics);
-	select_queues(compute_num, [](const auto& q) { return q.compute; }, qs.compute);
+
+	// Compute queues must come from the same family as graphics: readback buffers are created
+	// with exclusive sharing and are submitted from the graphics, utility and compute queues
+	// alike, which Vulkan only permits within one family. Prefer distinct queues in that family,
+	// then reuse ones already taken from it (queues shared this way are serialised by the
+	// per-queue mutex) instead of spilling into another family.
+	const uint32_t gfx_family =
+	    qs.graphics.empty() ? static_cast<uint32_t>(-1) : qs.graphics.front().family;
+	if (gfx_family != static_cast<uint32_t>(-1)) {
+		select_queues(
+		    compute_num, [gfx_family](const auto& q) { return q.compute && q.family == gfx_family; },
+		    qs.compute);
+		if (!qs.compute.empty()) {
+			const size_t distinct = qs.compute.size();
+			for (size_t i = 0; qs.compute.size() < static_cast<size_t>(compute_num); i++) {
+				qs.compute.push_back(qs.compute[i % distinct]);
+			}
+		}
+	}
+	// No compute-capable queue in the graphics family: fall back to any compute queue.
+	select_queues(compute_num - static_cast<uint32_t>(qs.compute.size()),
+	              [](const auto& q) { return q.compute; }, qs.compute);
 	select_queues(transfer_num, [](const auto& q) { return q.transfer; }, qs.transfer);
 	select_queues(present_num, [](const auto& q) { return q.present; }, qs.present);
 
@@ -433,11 +454,11 @@ static void VulkanFindPhysicalDevice(VkInstance instance, VkSurfaceKHR surface,
 			skip_device = true;
 		}
 
-		if (!skip_device && !CheckFormat(device, VK_FORMAT_D24_UNORM_S8_UINT, true,
+		/*if (!skip_device && !CheckFormat(device, VK_FORMAT_D24_UNORM_S8_UINT, true,
 		                                 VK_FORMAT_FEATURE_DEPTH_STENCIL_ATTACHMENT_BIT)) {
 			LOGF("Format VK_FORMAT_D24_UNORM_S8_UINT cannot be used as depth buffer\n");
 			skip_device = true;
-		}
+		}*/
 
 		if (!skip_device && !CheckFormat(device, VK_FORMAT_BC3_SRGB_BLOCK, true,
 		                                 VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT |
@@ -660,10 +681,25 @@ static VkDevice VulkanCreateDevice(VkPhysicalDevice physical_device, VkSurfaceKH
 	features13.pNext =
 	    robustness2_ext_enabled ? &robustness2 : const_cast<void*>(base_feature_chain);
 	features13.robustImageAccess = supported_features13.robustImageAccess;
+	features13.inlineUniformBlock = supported_features13.inlineUniformBlock;
+	features13.descriptorBindingInlineUniformBlockUpdateAfterBind = supported_features13.descriptorBindingInlineUniformBlockUpdateAfterBind;
+	features13.pipelineCreationCacheControl = supported_features13.pipelineCreationCacheControl;
+	features13.privateData = supported_features13.privateData;
+	features13.shaderDemoteToHelperInvocation = supported_features13.shaderDemoteToHelperInvocation;
+	features13.shaderTerminateInvocation = supported_features13.shaderTerminateInvocation;
+	features13.subgroupSizeControl = supported_features13.subgroupSizeControl;
+	features13.computeFullSubgroups = supported_features13.computeFullSubgroups;
+	features13.synchronization2 = supported_features13.synchronization2;
+	features13.textureCompressionASTC_HDR = supported_features13.textureCompressionASTC_HDR;
+	features13.shaderZeroInitializeWorkgroupMemory = supported_features13.shaderZeroInitializeWorkgroupMemory;
+	features13.dynamicRendering = supported_features13.dynamicRendering;
+	features13.shaderIntegerDotProduct = supported_features13.shaderIntegerDotProduct;
+	features13.maintenance4 = supported_features13.maintenance4;
 
-	LOGF("Vulkan robustness: robustImageAccess=%s robustImageAccess2=%s\n",
+	LOGF("Vulkan robustness: robustImageAccess=%s robustImageAccess2=%s dynamicRendering=%s\n",
 	     features13.robustImageAccess == VK_TRUE ? "true" : "false",
-	     robustness2_ext_enabled && robustness2.robustImageAccess2 == VK_TRUE ? "true" : "false");
+	     robustness2_ext_enabled && robustness2.robustImageAccess2 == VK_TRUE ? "true" : "false",
+	     features13.dynamicRendering == VK_TRUE ? "true" : "false");
 
 	VkDeviceCreateInfo create_info {};
 	create_info.sType                = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO;

@@ -594,11 +594,16 @@ static bool ConsumeMetadataColorOperation(const HW::Context& ctx) {
 }
 
 struct DrawEmitInfo {
-	bool     indexed           = false;
-	bool     draw_prim7_as_ngg = false;
-	uint32_t draw_vertex_count = 0;
-	int32_t  vertex_offset     = 0;
-	uint32_t first_vertex      = 0;
+	bool         indexed           = false;
+	bool         draw_prim7_as_ngg = false;
+	uint32_t     draw_vertex_count = 0;
+	int32_t      vertex_offset     = 0;
+	uint32_t     first_vertex      = 0;
+	bool         indirect          = false;
+	VkBuffer     indirect_buffer   = nullptr;
+	VkDeviceSize indirect_offset   = 0;
+	uint32_t     draw_count        = 0;
+	uint32_t     stride            = 0;
 };
 
 struct DrawIndexBufferSource {
@@ -869,6 +874,15 @@ static void EmitDrawPrimitives(const HW::UserConfig* ucfg, VkCommandBuffer vk_bu
                                const DrawEmitInfo& emit) {
 	EXIT_IF(ucfg == nullptr);
 	EXIT_IF(draw.name == nullptr);
+
+	if (emit.indirect) {
+		if (emit.indexed) {
+			vkCmdDrawIndexedIndirect(vk_buffer, emit.indirect_buffer, emit.indirect_offset, emit.draw_count, emit.stride);
+		} else {
+			vkCmdDrawIndirect(vk_buffer, emit.indirect_buffer, emit.indirect_offset, emit.draw_count, emit.stride);
+		}
+		return;
+	}
 
 	switch (static_cast<Prospero::PrimitiveType>(ucfg->GetPrimType())) {
 		case Prospero::PrimitiveType::kPointList:
@@ -1322,6 +1336,163 @@ static bool ResolveColorTargets(uint64_t submit_id, CommandBuffer* buffer, const
 	MarkRenderTargetGpuWritten(dst);
 	UtilImageToImage(buffer, regions, dst.vulkan_buffer, dst.vulkan_buffer->layout);
 	return true;
+}
+
+void RenderDrawIndirect(uint64_t submit_id, CommandBuffer* buffer, HW::Context* ctx,
+                        HW::UserConfig* ucfg, HW::Shader* sh_ctx, uint32_t flags, uint32_t type,
+                        VkBuffer indirect_buffer, VkDeviceSize indirect_offset,
+                        uint32_t draw_count, uint32_t stride) {
+	KYTY_PROFILER_FUNCTION();
+
+	EXIT_IF(ctx == nullptr);
+	EXIT_IF(ucfg == nullptr);
+	EXIT_IF(g_render_ctx == nullptr);
+	EXIT_IF(buffer == nullptr);
+	EXIT_IF(buffer->IsInvalid());
+
+	buffer->SetDebugInfo(static_cast<uint32_t>(CommandBufferDebugOp::DrawIndexAuto), submit_id,
+	                     0, flags, 1, 1, 0);
+
+	Common::LockGuard lock(g_render_ctx->GetMutex());
+
+	if (ConsumeMetadataColorOperation(*ctx)) {
+		return;
+	}
+
+	if (!DrawHasValidVertexShader(sh_ctx)) {
+		return;
+	}
+
+	if (ShouldSkipGeShader(ctx, ucfg, sh_ctx)) {
+		return;
+	}
+
+	sh_check(*sh_ctx);
+	uc_check(*ucfg);
+	hw_check(*ctx);
+
+	VkPrimitiveTopology topology = VK_PRIMITIVE_TOPOLOGY_POINT_LIST;
+	if (!GetDrawTopology(ucfg, false, false, &topology)) {
+		return;
+	}
+
+	const DrawCallInfo draw {"DrawIndirect", CommandBufferDebugOp::DrawIndexAuto,
+	                         0,            flags,
+	                         1,            0};
+
+	DrawIndexBufferSource index_source {};
+
+	DrawRenderState state {};
+	if (!PrepareDrawRenderState(submit_id, buffer, ctx, ucfg, sh_ctx, draw,
+	                            0, false, false, &state)) {
+		return;
+	}
+
+	RefreshShaders(ctx, sh_ctx, draw, false, &state);
+
+	DrawEmitInfo emit {};
+	emit.indexed           = false;
+	emit.indirect          = true;
+	emit.indirect_buffer   = indirect_buffer;
+	emit.indirect_offset   = indirect_offset;
+	emit.draw_count        = draw_count;
+	emit.stride            = stride;
+
+	ExecutePreparedDraw(submit_id, buffer, ctx, ucfg, sh_ctx, draw, &state, topology, emit,
+	                    index_source, true, false, true);
+}
+
+void RenderDrawIndexedIndirect(uint64_t submit_id, CommandBuffer* buffer, HW::Context* ctx,
+                               HW::UserConfig* ucfg, HW::Shader* sh_ctx, uint32_t index_type_and_size,
+                               const void* index_addr, uint32_t flags, uint32_t type,
+                               VkBuffer indirect_buffer, VkDeviceSize indirect_offset,
+                               uint32_t draw_count, uint32_t stride) {
+	KYTY_PROFILER_FUNCTION();
+
+	EXIT_IF(ctx == nullptr);
+	EXIT_IF(ucfg == nullptr);
+	EXIT_IF(g_render_ctx == nullptr);
+	EXIT_IF(buffer == nullptr);
+	EXIT_IF(buffer->IsInvalid());
+
+	buffer->SetDebugInfo(static_cast<uint32_t>(CommandBufferDebugOp::DrawIndex), submit_id,
+	                     0, flags, type, 1, reinterpret_cast<uint64_t>(index_addr));
+
+	Common::LockGuard lock(g_render_ctx->GetMutex());
+
+	if (ConsumeMetadataColorOperation(*ctx)) {
+		return;
+	}
+
+	if (!DrawHasValidVertexShader(sh_ctx)) {
+		return;
+	}
+
+	if (ShouldSkipGeShader(ctx, ucfg, sh_ctx)) {
+		return;
+	}
+
+	sh_check(*sh_ctx);
+	uc_check(*ucfg);
+	hw_check(*ctx);
+
+	VkPrimitiveTopology topology = VK_PRIMITIVE_TOPOLOGY_POINT_LIST;
+	if (!GetDrawTopology(ucfg, false, false, &topology)) {
+		return;
+	}
+
+	VkIndexType index_type = VK_INDEX_TYPE_UINT16;
+
+	switch (static_cast<Prospero::IndexType>(index_type_and_size)) {
+		case Prospero::IndexType::kIndex16:
+			index_type = VK_INDEX_TYPE_UINT16;
+			break;
+		case Prospero::IndexType::kIndex32:
+			index_type = VK_INDEX_TYPE_UINT32;
+			break;
+		case Prospero::IndexType::kIndex8:
+			index_type = VK_INDEX_TYPE_UINT16;
+			break;
+		default: EXIT("unknown index_type_and_size: %u\n", index_type_and_size);
+	}
+
+	EXIT_NOT_IMPLEMENTED(flags != 0);
+	EXIT_NOT_IMPLEMENTED(type != 1);
+
+	const DrawCallInfo draw {"DrawIndexIndirect", CommandBufferDebugOp::DrawIndex,
+	                         0,                  flags,
+	                         1,                  0};
+
+	const uint64_t index_size = 64 * 1024 * 1024; // 64MB safe range mapping
+
+	DrawIndexBufferSource index_source {};
+	index_source.enabled = true;
+	index_source.address = reinterpret_cast<uint64_t>(index_addr);
+	index_source.host_data = nullptr;
+	index_source.size = index_size;
+	index_source.type = index_type;
+
+	DrawRenderState state {};
+	if (!PrepareDrawRenderState(submit_id, buffer, ctx, ucfg, sh_ctx, draw,
+	                            0, false, true, &state)) {
+		return;
+	}
+
+	RefreshShaders(ctx, sh_ctx, draw, true, &state);
+
+	const auto vertex_offset = ResolveVertexOffset(ucfg->GetIndexOffset(), state.vs_input_info);
+
+	DrawEmitInfo emit {};
+	emit.indexed           = true;
+	emit.vertex_offset     = vertex_offset;
+	emit.indirect          = true;
+	emit.indirect_buffer   = indirect_buffer;
+	emit.indirect_offset   = indirect_offset;
+	emit.draw_count        = draw_count;
+	emit.stride            = stride;
+
+	ExecutePreparedDraw(submit_id, buffer, ctx, ucfg, sh_ctx, draw, &state, topology, emit,
+	                    index_source, true, true, false);
 }
 
 } // namespace Libs::Graphics

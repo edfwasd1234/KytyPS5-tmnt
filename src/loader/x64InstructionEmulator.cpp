@@ -140,12 +140,30 @@ static bool TryEmulateMonitorxMwaitx(PCONTEXT context) {
 	return true;
 }
 
+static bool SkipUnsupportedInstruction(PCONTEXT context) {
+	if (context == nullptr) {
+		return false;
+	}
+
+	// Never blindly skip: a wrong instruction-length guess desyncs the guest forever.
+	// Log the opcode bytes so the missing instruction can be emulated properly instead.
+	const auto* rip = reinterpret_cast<const uint8_t*>(context->Rip);
+	printf("Unemulated illegal instruction at rip=0x%016llx bytes:",
+	       static_cast<unsigned long long>(context->Rip));
+	for (int i = 0; i < 8; i++) {
+		printf(" %02x", rip[i]);
+	}
+	printf("\n");
+	fflush(stdout);
+	return false;
+}
+
 #endif
 
 bool TryEmulate(void* native_context) {
 #if KYTY_PLATFORM == KYTY_PLATFORM_WINDOWS
 	auto* context = static_cast<PCONTEXT>(native_context);
-	return TryEmulateMonitorxMwaitx(context) || TryEmulateSse4a(context);
+	return TryEmulateMonitorxMwaitx(context) || TryEmulateSse4a(context) || SkipUnsupportedInstruction(context);
 #else
 	(void)native_context;
 	return false;

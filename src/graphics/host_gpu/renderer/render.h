@@ -124,6 +124,15 @@ void RenderDrawIndexAuto(uint64_t submit_id, CommandBuffer* buffer, HW::Context*
                          uint32_t flags, uint32_t render_target_slice_offset = 0,
                          uint32_t instance_count = 1, uint32_t first_vertex = 0,
                          uint32_t first_instance = 0);
+void RenderDrawIndirect(uint64_t submit_id, CommandBuffer* buffer, HW::Context* ctx,
+                        HW::UserConfig* ucfg, HW::Shader* sh_ctx, uint32_t flags, uint32_t type,
+                        VkBuffer indirect_buffer, VkDeviceSize indirect_offset,
+                        uint32_t draw_count, uint32_t stride);
+void RenderDrawIndexedIndirect(uint64_t submit_id, CommandBuffer* buffer, HW::Context* ctx,
+                               HW::UserConfig* ucfg, HW::Shader* sh_ctx, uint32_t index_type_and_size,
+                               const void* index_addr, uint32_t flags, uint32_t type,
+                               VkBuffer indirect_buffer, VkDeviceSize indirect_offset,
+                               uint32_t draw_count, uint32_t stride);
 void RenderDispatchDirect(uint64_t submit_id, CommandBuffer* buffer, HW::Context* ctx,
                           HW::Shader* sh_ctx, uint32_t thread_group_x, uint32_t thread_group_y,
                           uint32_t thread_group_z, uint32_t mode);

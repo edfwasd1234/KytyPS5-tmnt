@@ -1,4 +1,5 @@
 #include "common/hostException.h"
+#include "common/logging/log.h"
 
 #include <atomic>
 #include <cstdio>
@@ -54,7 +55,8 @@ static LONG WINAPI ExceptionFilter(PEXCEPTION_POINTERS exception) {
 	auto* exception_record = exception->ExceptionRecord;
 
 	if (exception_record->ExceptionCode == DBG_PRINTEXCEPTION_C ||
-	    exception_record->ExceptionCode == DBG_PRINTEXCEPTION_WIDE_C) {
+	    exception_record->ExceptionCode == DBG_PRINTEXCEPTION_WIDE_C ||
+	    exception_record->ExceptionCode == 0xe06d7363) {
 		return EXCEPTION_CONTINUE_SEARCH;
 	}
 
@@ -68,7 +70,8 @@ static LONG WINAPI ExceptionFilter(PEXCEPTION_POINTERS exception) {
 	info.native_code       = exception_record->ExceptionCode;
 	info.native_context    = exception->ContextRecord;
 
-	if (exception_record->ExceptionCode == EXCEPTION_ACCESS_VIOLATION) {
+	if (exception_record->ExceptionCode == EXCEPTION_ACCESS_VIOLATION ||
+	    exception_record->ExceptionCode == EXCEPTION_GUARD_PAGE) {
 		info.type = ExceptionType::AccessViolation;
 		switch (exception_record->ExceptionInformation[0]) {
 			case 0: info.access_violation_type = AccessViolationType::Read; break;
@@ -77,7 +80,8 @@ static LONG WINAPI ExceptionFilter(PEXCEPTION_POINTERS exception) {
 			default: info.access_violation_type = AccessViolationType::Unknown; break;
 		}
 		info.access_violation_vaddr = exception_record->ExceptionInformation[1];
-	} else if (exception_record->ExceptionCode == EXCEPTION_ILLEGAL_INSTRUCTION) {
+	} else if (exception_record->ExceptionCode == EXCEPTION_ILLEGAL_INSTRUCTION ||
+	           exception_record->ExceptionCode == EXCEPTION_PRIV_INSTRUCTION) {
 		info.type = ExceptionType::IllegalInstruction;
 	} else {
 		printf("Unhandled win exception: code=0x%08" PRIx32 ", addr=0x%016" PRIx64
@@ -86,6 +90,7 @@ static LONG WINAPI ExceptionFilter(PEXCEPTION_POINTERS exception) {
 		       reinterpret_cast<uint64_t>(exception_record->ExceptionAddress),
 		       exception->ContextRecord->Rip, exception->ContextRecord->Rsp,
 		       exception->ContextRecord->Rbp);
+		fflush(stdout);
 		return EXCEPTION_CONTINUE_SEARCH;
 	}
 
@@ -115,7 +120,51 @@ static LONG WINAPI ExceptionFilter(PEXCEPTION_POINTERS exception) {
 		FailFast("host exception callback is null");
 	}
 
-	return handler(info) ? EXCEPTION_CONTINUE_EXECUTION : EXCEPTION_CONTINUE_SEARCH;
+	if (handler(info)) {
+		return EXCEPTION_CONTINUE_EXECUTION;
+	}
+
+	HMODULE rip_module = nullptr;
+	char rip_module_name[MAX_PATH] = "unknown";
+	uint64_t rip_offset = 0;
+	if (GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS |
+	                           GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+	                       reinterpret_cast<LPCSTR>(exception->ContextRecord->Rip), &rip_module) != 0 &&
+	    rip_module != nullptr) {
+		GetModuleFileNameA(rip_module, rip_module_name, MAX_PATH);
+		rip_offset = reinterpret_cast<uint64_t>(exception->ContextRecord->Rip) - reinterpret_cast<uint64_t>(rip_module);
+	}
+
+	LOGF("[VEH] code=0x%08x addr=0x%016" PRIx64 " rip=0x%016" PRIx64 " (%s + 0x%" PRIx64 ") ThreadId=%lu\n",
+	     static_cast<unsigned>(exception_record->ExceptionCode),
+	     reinterpret_cast<uint64_t>(exception_record->ExceptionAddress),
+	     exception->ContextRecord->Rip, rip_module_name, rip_offset, GetCurrentThreadId());
+
+	if (exception_record->ExceptionCode != DBG_PRINTEXCEPTION_C &&
+	    exception_record->ExceptionCode != DBG_PRINTEXCEPTION_WIDE_C &&
+	    exception_record->ExceptionCode != 0x406D1388 &&
+	    exception_record->ExceptionCode != EXCEPTION_ACCESS_VIOLATION &&
+	    exception_record->ExceptionCode != EXCEPTION_ILLEGAL_INSTRUCTION &&
+	    exception_record->ExceptionCode != EXCEPTION_PRIV_INSTRUCTION) {
+		LOGF("[VEH] Unexpected exception thrown!\n");
+		void* stack[32];
+		USHORT frames = CaptureStackBackTrace(0, 32, stack, NULL);
+		for (USHORT i = 0; i < frames; i++) {
+			HMODULE owner_module = nullptr;
+			char module_name[MAX_PATH] = "unknown";
+			uint64_t offset = 0;
+			if (GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS |
+			                           GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+			                       reinterpret_cast<LPCSTR>(stack[i]), &owner_module) != 0 &&
+			    owner_module != nullptr) {
+				GetModuleFileNameA(owner_module, module_name, MAX_PATH);
+				offset = reinterpret_cast<uint64_t>(stack[i]) - reinterpret_cast<uint64_t>(owner_module);
+			}
+			LOGF("  [%u] %p (%s + 0x%" PRIx64 ")\n", i, stack[i], module_name, offset);
+		}
+	}
+
+	return EXCEPTION_CONTINUE_SEARCH;
 }
 
 #endif

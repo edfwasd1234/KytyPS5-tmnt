@@ -738,7 +738,7 @@ public:
 
 	KYTY_CLASS_NO_COPY(PhysicalMemory);
 
-	static uint64_t Size() { return static_cast<uint64_t>(13824) * 1024 * 1024; }
+	static uint64_t Size() { return static_cast<uint64_t>(4096) * 1024 * 1024; }
 
 	bool Alloc(uint64_t search_start, uint64_t search_end, size_t len, size_t alignment,
 	           uint64_t* phys_addr_out, int memory_type, bool pool_expansion = false);
@@ -3232,7 +3232,17 @@ bool KernelHandleReservedRangeAccessViolation(uint64_t vaddr) {
 	    std::strncmp(range.name, "AMM", KERNEL_MAXIMUM_NAME_LENGTH) != 0) {
 		return false;
 	}
-	EXIT("AMM virtual-memory unmap is unsupported: addr=0x%016" PRIx64 "\n", vaddr);
+	// Dynamically commit reserved AMM memory to allow guest execution to continue. Commit a
+	// large chunk (bounded by the range) rather than one page so conservative GC scans do not
+	// degrade into a fault-per-page storm.
+	uint64_t page_addr = vaddr & ~UINT64_C(0xFFF);
+#if KYTY_PLATFORM == KYTY_PLATFORM_WINDOWS
+	const uint64_t range_end = range.start + range.size;
+	const uint64_t chunk = std::min<uint64_t>(UINT64_C(0x400000), range_end > page_addr ? range_end - page_addr : 0x1000);
+	VirtualAlloc(reinterpret_cast<void*>(page_addr), chunk, MEM_COMMIT, PAGE_READWRITE);
+#endif
+	LOGF("[Compat Patch] Committed AMM reserved chunk for 0x%016" PRIx64 "\n", page_addr);
+	return true;
 }
 
 int KYTY_SYSV_ABI KernelVirtualQuery(const void* addr, int flags, VirtualQueryInfo* info,

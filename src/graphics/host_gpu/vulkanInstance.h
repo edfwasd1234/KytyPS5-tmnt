@@ -10,7 +10,7 @@
 
 namespace Libs::Graphics {
 
-inline constexpr uint32_t VULKAN_TARGET_API_VERSION = VK_API_VERSION_1_3;
+inline constexpr uint32_t VULKAN_TARGET_API_VERSION = VK_API_VERSION_1_2;
 
 struct VulkanQueueInfo {
 	Common::Mutex* mutex    = nullptr;

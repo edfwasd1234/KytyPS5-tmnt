@@ -87,6 +87,7 @@ if(KYTY_CLANG_CL)
 	set(KYTY_CPP_FLAGS "${KYTY_CPP_FLAGS} /utf-8 /Oy- /wd4244 /wd4305 /wd4800 /wd4345")
 	
 	add_link_options("$<$<CONFIG:RELEASE>:/OPT:NOREF>")
+	add_link_options("/STACK:8388608")
   
 	if(KYTY_WARNINGS_ARE_ERRORS)
 		#set(KYTY_CPP_FLAGS "${KYTY_CPP_FLAGS} /WX")

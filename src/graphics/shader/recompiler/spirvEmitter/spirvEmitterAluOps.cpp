@@ -2546,4 +2546,133 @@ void EmitMed3F32(EmitterState* state, const IR::Instruction& inst) {
 	EmitStoreU32(state, inst.dst, u32);
 }
 
+void EmitBitFieldExtractI32(EmitterState* state, const IR::Instruction& inst) {
+	const auto src    = EmitValueLoad(state, inst.src[0]);
+	const auto field  = EmitValueLoad(state, inst.src[1]);
+	const auto offset = EmitBitFieldExtractConstant(state, field, 0, 5);
+	const auto count  = EmitBitFieldExtractConstant(state, field, 16, 7);
+	const auto ret    = state->builder.AllocateId();
+	state->builder.AddFunction({OpBitFieldSExtract, state->uint_type, ret, src, offset, count});
+	EmitStoreU32(state, inst.dst, ret);
+}
+
+void EmitSignExtendI8(EmitterState* state, const IR::Instruction& inst) {
+	const auto src    = EmitValueLoad(state, inst.src[0]);
+	const auto ret    = state->builder.AllocateId();
+	state->builder.AddFunction({OpBitFieldSExtract, state->uint_type, ret, src, ConstantU32(state, 0), ConstantU32(state, 8)});
+	EmitStoreU32(state, inst.dst, ret);
+}
+
+void EmitSignExtendI16(EmitterState* state, const IR::Instruction& inst) {
+	const auto src    = EmitValueLoad(state, inst.src[0]);
+	const auto ret    = state->builder.AllocateId();
+	state->builder.AddFunction({OpBitFieldSExtract, state->uint_type, ret, src, ConstantU32(state, 0), ConstantU32(state, 16)});
+	EmitStoreU32(state, inst.dst, ret);
+}
+
+void EmitAbsdiffI32(EmitterState* state, const IR::Instruction& inst) {
+	const auto src0   = EmitValueLoad(state, inst.src[0]);
+	const auto src1   = EmitValueLoad(state, inst.src[1]);
+	const auto diff   = state->builder.AllocateId();
+	const auto ret    = state->builder.AllocateId();
+	state->builder.AddFunction({OpISub, state->uint_type, diff, src0, src1});
+	state->builder.AddFunction({OpExtInst, state->uint_type, ret, state->glsl_std450, GlslSAbs, diff});
+	EmitStoreU32(state, inst.dst, ret);
+}
+
+void EmitAlignByteB32(EmitterState* state, const IR::Instruction& inst) {
+	const auto src0   = EmitValueLoad(state, inst.src[0]);
+	const auto src1   = EmitValueLoad(state, inst.src[1]);
+	const auto src2   = EmitValueLoad(state, inst.src[2]);
+	const auto shift  = state->builder.AllocateId();
+	const auto shift8 = state->builder.AllocateId();
+	const auto s0_sh  = state->builder.AllocateId();
+	const auto s1_sh  = state->builder.AllocateId();
+	const auto ret    = state->builder.AllocateId();
+	state->builder.AddFunction({OpBitwiseAnd, state->uint_type, shift, src2, ConstantU32(state, 3u)});
+	state->builder.AddFunction({OpIMul, state->uint_type, shift8, shift, ConstantU32(state, 8u)});
+	state->builder.AddFunction({OpShiftRightLogical, state->uint_type, s0_sh, src0, shift8});
+	const auto diff32 = state->builder.AllocateId();
+	state->builder.AddFunction({OpISub, state->uint_type, diff32, ConstantU32(state, 32u), shift8});
+	state->builder.AddFunction({OpShiftLeftLogical, state->uint_type, s1_sh, src1, diff32});
+	const auto is_zero = state->builder.AllocateId();
+	const auto s1_sh_m = state->builder.AllocateId();
+	state->builder.AddFunction({OpIEqual, state->bool_type, is_zero, shift8, ConstantU32(state, 0)});
+	state->builder.AddFunction({OpSelect, state->uint_type, s1_sh_m, is_zero, ConstantU32(state, 0), s1_sh});
+	state->builder.AddFunction({OpBitwiseOr, state->uint_type, ret, s0_sh, s1_sh_m});
+	EmitStoreU32(state, inst.dst, ret);
+}
+
+void EmitPermB32(EmitterState* state, const IR::Instruction& inst) {
+	const auto src0  = EmitValueLoad(state, inst.src[0]);
+	const auto src1  = EmitValueLoad(state, inst.src[1]);
+	const auto src2  = EmitValueLoad(state, inst.src[2]);
+	const auto ret   = state->builder.AllocateId();
+	uint32_t byte_ids[4];
+	for (uint32_t i = 0; i < 4; i++) {
+		const auto ctrl = state->builder.AllocateId();
+		state->builder.AddFunction({OpShiftRightLogical, state->uint_type, ctrl, src2, ConstantU32(state, i * 8)});
+		const auto idx = state->builder.AllocateId();
+		state->builder.AddFunction({OpBitwiseAnd, state->uint_type, idx, ctrl, ConstantU32(state, 7u)});
+		const auto shift_amt = state->builder.AllocateId();
+		state->builder.AddFunction({OpIMul, state->uint_type, shift_amt, idx, ConstantU32(state, 8u)});
+		const auto val_s0 = state->builder.AllocateId();
+		state->builder.AddFunction({OpShiftRightLogical, state->uint_type, val_s0, src0, shift_amt});
+		const auto idx_sub4 = state->builder.AllocateId();
+		state->builder.AddFunction({OpISub, state->uint_type, idx_sub4, idx, ConstantU32(state, 4u)});
+		const auto shift_amt1 = state->builder.AllocateId();
+		state->builder.AddFunction({OpIMul, state->uint_type, shift_amt1, idx_sub4, ConstantU32(state, 8u)});
+		const auto val_s1 = state->builder.AllocateId();
+		state->builder.AddFunction({OpShiftRightLogical, state->uint_type, val_s1, src1, shift_amt1});
+		const auto is_src1 = state->builder.AllocateId();
+		state->builder.AddFunction({OpUGreaterThanEqual, state->bool_type, is_src1, idx, ConstantU32(state, 4u)});
+		const auto byte_val = state->builder.AllocateId();
+		state->builder.AddFunction({OpSelect, state->uint_type, byte_val, is_src1, val_s1, val_s0});
+		const auto byte_masked = state->builder.AllocateId();
+		state->builder.AddFunction({OpBitwiseAnd, state->uint_type, byte_masked, byte_val, ConstantU32(state, 0xffu)});
+		const auto is_const = state->builder.AllocateId();
+		const auto and_20 = state->builder.AllocateId();
+		state->builder.AddFunction({OpBitwiseAnd, state->uint_type, and_20, ctrl, ConstantU32(state, 0x20u)});
+		state->builder.AddFunction({OpINotEqual, state->bool_type, is_const, and_20, ConstantU32(state, 0u)});
+		const auto is_ff = state->builder.AllocateId();
+		const auto and_80 = state->builder.AllocateId();
+		state->builder.AddFunction({OpBitwiseAnd, state->uint_type, and_80, ctrl, ConstantU32(state, 0x80u)});
+		state->builder.AddFunction({OpINotEqual, state->bool_type, is_ff, and_80, ConstantU32(state, 0u)});
+		const auto const_val = state->builder.AllocateId();
+		state->builder.AddFunction({OpSelect, state->uint_type, const_val, is_ff, ConstantU32(state, 0xffu), ConstantU32(state, 0u)});
+		const auto final_byte = state->builder.AllocateId();
+		state->builder.AddFunction({OpSelect, state->uint_type, final_byte, is_const, const_val, byte_masked});
+		byte_ids[i] = state->builder.AllocateId();
+		state->builder.AddFunction({OpShiftLeftLogical, state->uint_type, byte_ids[i], final_byte, ConstantU32(state, i * 8)});
+	}
+	const auto or01 = state->builder.AllocateId();
+	state->builder.AddFunction({OpBitwiseOr, state->uint_type, or01, byte_ids[0], byte_ids[1]});
+	const auto or23 = state->builder.AllocateId();
+	state->builder.AddFunction({OpBitwiseOr, state->uint_type, or23, byte_ids[2], byte_ids[3]});
+	state->builder.AddFunction({OpBitwiseOr, state->uint_type, ret, or01, or23});
+	EmitStoreU32(state, inst.dst, ret);
+}
+
+void EmitPackI16ToI32(EmitterState* state, const IR::Instruction& inst) {
+	const auto src0   = EmitValueLoad(state, inst.src[0]);
+	const auto src1   = EmitValueLoad(state, inst.src[1]);
+	const auto mask0  = state->builder.AllocateId();
+	const auto sh1    = state->builder.AllocateId();
+	const auto ret    = state->builder.AllocateId();
+	state->builder.AddFunction({OpBitwiseAnd, state->uint_type, mask0, src0, ConstantU32(state, 0xffffu)});
+	state->builder.AddFunction({OpShiftLeftLogical, state->uint_type, sh1, src1, ConstantU32(state, 16u)});
+	state->builder.AddFunction({OpBitwiseOr, state->uint_type, ret, mask0, sh1});
+	EmitStoreU32(state, inst.dst, ret);
+}
+
+void EmitFractF16(EmitterState* state, const IR::Instruction& inst) {
+	const auto src  = EmitFloatLoad(state, inst.src[0]);
+	const auto base = state->builder.AllocateId();
+	state->builder.AddFunction({OpExtInst, state->float_type, base, state->glsl_std450, GlslFract, src});
+	const auto f32  = ApplyResultModifiersF32(state, base, inst.dst);
+	const auto u32  = state->builder.AllocateId();
+	state->builder.AddFunction({OpBitcast, state->uint_type, u32, f32});
+	EmitStoreU32(state, inst.dst, u32);
+}
+
 } // namespace Libs::Graphics::ShaderRecompiler::Spirv::Emitter

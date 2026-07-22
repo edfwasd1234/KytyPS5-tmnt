@@ -2768,6 +2768,7 @@ static CompactRegisterDefaults* g_agc_public_reg_defaults_by_version[] = {
     &g_agc_public_reg_defaults_v10, // version 10
     &g_agc_public_reg_defaults_v11, // version 11
     &g_agc_public_reg_defaults_v10, // version 12
+    &g_agc_public_reg_defaults_v10, // version 13
 };
 
 static CompactRegisterDefaults* g_agc_internal_reg_defaults_by_version[] = {
@@ -2784,4 +2785,5 @@ static CompactRegisterDefaults* g_agc_internal_reg_defaults_by_version[] = {
     &g_agc_internal_reg_defaults_v10, // version 10
     &g_agc_internal_reg_defaults_v11, // version 11
     &g_agc_internal_reg_defaults_v10, // version 12
+    &g_agc_internal_reg_defaults_v10, // version 13
 };

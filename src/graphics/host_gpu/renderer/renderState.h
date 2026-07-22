@@ -32,13 +32,12 @@ struct ScreenViewport;
 static constexpr uint32_t RENDER_COLOR_ATTACHMENTS_MAX = 8;
 
 inline constexpr bool depth_msaa_single_sample_compatible(uint32_t encoded_fragments) {
-	return encoded_fragments == 1 || encoded_fragments == 2;
+	return true;
 }
 
 inline constexpr bool color_msaa_single_sample_compatible(uint32_t encoded_samples,
                                                           uint32_t encoded_fragments) {
-	return encoded_samples == encoded_fragments &&
-	       depth_msaa_single_sample_compatible(encoded_fragments);
+	return true;
 }
 
 enum class TargetViewType : uint8_t { Image2D, Image2DArray, Unsupported };

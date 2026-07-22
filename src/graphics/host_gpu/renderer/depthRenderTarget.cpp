@@ -189,11 +189,123 @@ void ResolveRenderDepthTarget(uint64_t submit_id, CommandBuffer* buffer, const H
 	}
 	const bool size_xy_valid = z.size.valid && (z.size.x_max != 0 || z.size.y_max != 0);
 	const bool wh_valid      = z.width_height_valid && z.width != 0 && z.height != 0;
-	if (!size_xy_valid && !wh_valid) {
-		DepthFatal("missing depth extent");
+	// DB_DEPTH_SIZE encodes the surface pitch/height in 8-pixel units. It is normally only
+	// cross-checked against the extent below, but a depth surface can be bound with just this
+	// register (Unity's HTile/quad clear path does exactly that), so use it as a third source.
+	const bool encoded_extent_valid =
+	    !size_xy_valid && !wh_valid && z.pitch_height_valid &&
+	    (z.pitch_div8_minus1 != 0 || z.height_div8_minus1 != 0);
+	// Last resort: a depth/stencil surface can be bound with valid base addresses but no extent
+	// register at all (Unity binds one this way for stencil-only passes). Every attachment in a
+	// render pass shares the framebuffer extent, so fall back to a bound colour target; if there
+	// is no colour target either, the screen scissor bounds the render area.
+	uint32_t fallback_width  = 0;
+	uint32_t fallback_height = 0;
+	for (uint32_t slot = 0; slot < 8 && fallback_width == 0; slot++) {
+		const auto& ct = hw.GetRenderTarget(slot);
+		if (ct.base.addr != 0 && ct.size.width != 0 && ct.size.height != 0) {
+			fallback_width  = ct.size.width;
+			fallback_height = ct.size.height;
+		}
 	}
-	const uint32_t width  = size_xy_valid ? static_cast<uint32_t>(z.size.x_max) + 1u : z.width;
-	const uint32_t height = size_xy_valid ? static_cast<uint32_t>(z.size.y_max) + 1u : z.height;
+	const char* fallback_source = "colour target";
+	const auto& sv              = hw.GetScreenViewport();
+	if (fallback_width == 0 || fallback_height == 0) {
+		// The viewport transform bounds the region a draw can address: x spans
+		// [xoffset - xscale, xoffset + xscale] and y likewise (yscale is negative for the
+		// PS5's flipped clip space). This is the only extent the guest always sets, because
+		// it is expressed as floats rather than as a size register.
+		const auto& vp     = sv.viewports[0];
+		const float x_max  = vp.xoffset + std::fabs(vp.xscale);
+		const float y_max  = vp.yoffset + std::fabs(vp.yscale);
+		if (x_max >= 1.0f && y_max >= 1.0f && x_max <= 16384.0f && y_max <= 16384.0f) {
+			fallback_width  = static_cast<uint32_t>(std::ceil(x_max));
+			fallback_height = static_cast<uint32_t>(std::ceil(y_max));
+			fallback_source = "viewport";
+		}
+	}
+	if (fallback_width == 0 || fallback_height == 0) {
+		if (sv.screen_scissor_right > sv.screen_scissor_left &&
+		    sv.screen_scissor_bottom > sv.screen_scissor_top) {
+			fallback_width  = static_cast<uint32_t>(sv.screen_scissor_right - sv.screen_scissor_left);
+			fallback_height = static_cast<uint32_t>(sv.screen_scissor_bottom - sv.screen_scissor_top);
+			fallback_source = "screen scissor";
+		}
+	}
+	const bool fallback_extent_valid = !size_xy_valid && !wh_valid && !encoded_extent_valid &&
+	                                   fallback_width != 0 && fallback_height != 0;
+	if (fallback_extent_valid) {
+		static std::atomic_bool logged = false;
+		if (!logged.load(std::memory_order_relaxed) &&
+		    !logged.exchange(true, std::memory_order_relaxed)) {
+			LOGF("DepthTarget: compatibility: no depth extent register set; using %s extent "
+			     "%ux%u\n",
+			     fallback_source, fallback_width, fallback_height);
+		}
+	}
+	// A depth surface whose extent registers were explicitly written as zero is degenerate: the
+	// guest carries the depth/stencil state purely so a fast-clear can be issued, and the actual
+	// clear is performed by the HTile compute path rather than by a render pass. A zero-sized
+	// attachment cannot be created in Vulkan, so drop it for this draw instead of aborting.
+	if (!size_xy_valid && !wh_valid && !encoded_extent_valid && !fallback_extent_valid &&
+	    !depth_active) {
+		static std::atomic_bool logged = false;
+		if (!logged.load(std::memory_order_relaxed) &&
+		    !logged.exchange(true, std::memory_order_relaxed)) {
+			LOGF("DepthTarget: compatibility: dropping zero-extent depth/stencil attachment "
+			     "(stencil_clear=%d stencil_test=%d); the fast-clear path owns this surface\n",
+			     static_cast<int>(rc.stencil_clear_enable), static_cast<int>(dc.stencil_enable));
+		}
+		return;
+	}
+	if (!size_xy_valid && !wh_valid && !encoded_extent_valid && !fallback_extent_valid) {
+		for (uint32_t slot = 0; slot < 8; slot++) {
+			const auto& ct = hw.GetRenderTarget(slot);
+			if (ct.base.addr != 0 || ct.size.width != 0 || ct.size.height != 0) {
+				LOGF("  colour target %u: addr=0x%016" PRIx64 " %ux%u\n", slot, ct.base.addr,
+				     ct.size.width, ct.size.height);
+			}
+		}
+		const auto& sv = hw.GetScreenViewport();
+		LOGF("  screen scissor: %d,%d..%d,%d  generic: %d,%d..%d,%d  window: %d,%d..%d,%d\n",
+		     sv.screen_scissor_left, sv.screen_scissor_top, sv.screen_scissor_right,
+		     sv.screen_scissor_bottom, sv.generic_scissor_left, sv.generic_scissor_top,
+		     sv.generic_scissor_right, sv.generic_scissor_bottom, sv.window_scissor_left,
+		     sv.window_scissor_top, sv.window_scissor_right, sv.window_scissor_bottom);
+		LOGF("  viewport0: xscale=%f yscale=%f xoffset=%f yoffset=%f\n", sv.viewports[0].xscale,
+		     sv.viewports[0].yscale, sv.viewports[0].xoffset, sv.viewports[0].yoffset);
+		DepthFatal("missing depth extent: size.valid=%d x_max=%u y_max=%u wh_valid=%d w=%u h=%u "
+		           "pitch_height_valid=%d pitch8=%u height8=%u slice64=%u z_fmt=%u s_fmt=%u "
+		           "htile=%d z_base=0x%016" PRIx64 " s_base=0x%016" PRIx64
+		           " htile_base=0x%016" PRIx64 " depth_active=%d stencil_active=%d "
+		           "z_en=%d z_wr=%d z_clear=%d s_clear=%d",
+		           static_cast<int>(z.size.valid), z.size.x_max, z.size.y_max,
+		           static_cast<int>(z.width_height_valid), z.width, z.height,
+		           static_cast<int>(z.pitch_height_valid), z.pitch_div8_minus1,
+		           z.height_div8_minus1, z.slice_div64_minus1, z.z_info.format,
+		           z.stencil_info.format, static_cast<int>(has_htile), z.z_read_base_addr,
+		           z.stencil_read_base_addr, z.htile_data_base_addr,
+		           static_cast<int>(depth_active), static_cast<int>(stencil_active),
+		           static_cast<int>(dc.z_enable), static_cast<int>(dc.z_write_enable),
+		           static_cast<int>(rc.depth_clear_enable),
+		           static_cast<int>(rc.stencil_clear_enable));
+	}
+	if (encoded_extent_valid) {
+		static std::atomic_bool logged = false;
+		if (!logged.load(std::memory_order_relaxed) &&
+		    !logged.exchange(true, std::memory_order_relaxed)) {
+			LOGF("DepthTarget: deriving depth extent from encoded pitch/height (%ux%u)\n",
+			     (z.pitch_div8_minus1 + 1u) * 8u, (z.height_div8_minus1 + 1u) * 8u);
+		}
+	}
+	const uint32_t width  = size_xy_valid           ? static_cast<uint32_t>(z.size.x_max) + 1u
+	                        : wh_valid             ? z.width
+	                        : encoded_extent_valid ? (z.pitch_div8_minus1 + 1u) * 8u
+	                                               : fallback_width;
+	const uint32_t height = size_xy_valid           ? static_cast<uint32_t>(z.size.y_max) + 1u
+	                        : wh_valid             ? z.height
+	                        : encoded_extent_valid ? (z.height_div8_minus1 + 1u) * 8u
+	                                               : fallback_height;
 	if (width > 16384 || height > 16384 ||
 	    (size_xy_valid && wh_valid && (width != z.width || height != z.height)) ||
 	    (!z.pitch_height_valid &&

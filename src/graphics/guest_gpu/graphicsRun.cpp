@@ -737,11 +737,15 @@ void GraphicsRing::Submit(OwnedCmdBuffer draw_buffer, OwnedCmdBuffer const_buffe
 
 void GraphicsRing::SubmitFlipPreparation() {
 	EXIT_IF(m_cp == nullptr);
+	LOGF("SubmitFlipPreparation: locking ring mutex...\n");
 	Common::LockGuard lock(m_mutex);
 
+	LOGF("SubmitFlipPreparation: waiting for graphic initialization...\n");
 	WindowWaitForGraphicInitialized();
+	LOGF("SubmitFlipPreparation: creating graphics render context...\n");
 	GraphicsRenderCreateContext();
 	if (m_done) {
+		LOGF("SubmitFlipPreparation: ring is done, waiting for idle...\n");
 		while (!m_idle) {
 			m_idle_cond_var.Wait(&m_mutex);
 		}
@@ -749,10 +753,12 @@ void GraphicsRing::SubmitFlipPreparation() {
 		m_cp->Reset();
 	}
 
+	LOGF("SubmitFlipPreparation: pushing cmd batch...\n");
 	auto& batch            = m_cmd_batches.emplace_back();
 	batch.prepare_cpu_flip = true;
 	m_idle                 = false;
 	m_cond_var.Signal();
+	LOGF("SubmitFlipPreparation: returning from SubmitFlipPreparation\n");
 }
 
 void GraphicsRing::Done() {
@@ -1202,66 +1208,28 @@ void CommandProcessor::DrawIndirect(uint32_t data_offset, uint32_t draw_initiato
 	EXIT_NOT_IMPLEMENTED((draw_initiator & ~0x20u) != 2u);
 	EXIT_NOT_IMPLEMENTED(m_draw_indirect_args_base_addr == 0);
 
-	const auto* args_addr =
-	    reinterpret_cast<const void*>(m_draw_indirect_args_base_addr + data_offset);
+	const auto args_size = indexed ? sizeof(DrawIndexedIndirectArgs) : sizeof(DrawIndirectArgs);
+	const auto vaddr     = m_draw_indirect_args_base_addr + data_offset;
+
+	auto* command      = CurrentBuffer();
+	auto* host_ctx     = g_render_ctx->GetGraphicCtx();
+	auto* buffer_cache = g_render_ctx->GetBufferCache();
+
+	auto binding = buffer_cache->ObtainBuffer(command, host_ctx, vaddr, args_size);
+	auto* indirect_buffer = binding.first;
+	auto  indirect_offset = binding.second;
+
+	EXIT_IF(indirect_buffer == nullptr);
 
 	if (!indexed) {
-		DrawIndirectArgs args {};
-		std::memcpy(&args, args_addr, sizeof(args));
-		if (args.instance_count != 1u || args.start_vertex_location != 0u ||
-		    args.start_instance_location != 0u) {
-			static std::atomic<uint32_t> log_count {0};
-			if (log_count.fetch_add(1) < 64) {
-				LOGF("\t warning: partial DrawIndirect args: vertex_count=%" PRIu32
-				     ", instance_count=%" PRIu32 ", start_vertex=%" PRIu32
-				     ", start_instance=%" PRIu32 "\n",
-				     args.vertex_count_per_instance, args.instance_count,
-				     args.start_vertex_location, args.start_instance_location);
-			}
-		}
-		DrawIndexAuto(args.vertex_count_per_instance, 0, 0, args.instance_count,
-		              args.start_vertex_location, args.start_instance_location);
+		RenderDrawIndirect(m_submit_id, command, &m_ctx, &m_ucfg, &m_sh_ctx, 0, 1,
+		                   indirect_buffer->buffer, indirect_offset, 1, sizeof(DrawIndirectArgs));
 		return;
 	}
 
-	DrawIndexedIndirectArgs args {};
-	std::memcpy(&args, args_addr, sizeof(args));
-	if (args.base_vertex_location != 0u || args.start_instance_location != 0u) {
-		static std::atomic<uint32_t> log_count {0};
-		if (log_count.fetch_add(1) < 64) {
-			LOGF("\t warning: partial DrawIndexIndirect args: index_count=%" PRIu32
-			     ", instance_count=%" PRIu32 ", start_index=%" PRIu32 ", base_vertex=%" PRIu32
-			     ", start_instance=%" PRIu32 "\n",
-			     args.index_count_per_instance, args.instance_count, args.start_index_location,
-			     args.base_vertex_location, args.start_instance_location);
-		}
-	}
-
-	uint64_t index_size = 0;
-	switch (m_index_type_and_size) {
-		case 0: index_size = 2; break;
-		case 1: index_size = 4; break;
-		case 2: index_size = 1; break;
-		default: EXIT("unknown index_type_and_size: %u\n", m_index_type_and_size);
-	}
-
-	auto* index_addr = reinterpret_cast<const void*>(
-	    m_index_base_addr + static_cast<uint64_t>(args.start_index_location) * index_size);
-
-	const uint32_t index_count =
-	    (m_index_buffer_size != 0 ? std::min(args.index_count_per_instance, m_index_buffer_size)
-	                              : args.index_count_per_instance);
-	if (GraphicsRunDebugDumpEnabled() && index_count != args.index_count_per_instance) {
-		static std::atomic<uint32_t> log_count {0};
-		if (log_count.fetch_add(1, std::memory_order_relaxed) < 64) {
-			LOGF("\t DrawIndexIndirect: clamped index_count from %" PRIu32 " to %" PRIu32
-			     " using INDEX_BUFFER_SIZE\n",
-			     args.index_count_per_instance, index_count);
-		}
-	}
-
-	DrawIndex(index_count, index_addr, 0, 1, args.instance_count, nullptr, 0,
-	          static_cast<int32_t>(args.base_vertex_location), args.start_instance_location);
+	RenderDrawIndexedIndirect(m_submit_id, command, &m_ctx, &m_ucfg, &m_sh_ctx, m_index_type_and_size,
+	                          reinterpret_cast<const void*>(m_index_base_addr), 0, 1,
+	                          indirect_buffer->buffer, indirect_offset, 1, sizeof(DrawIndexedIndirectArgs));
 }
 
 void CommandProcessor::DrawIndirectMulti(uint32_t data_offset, uint32_t max_count_or_count,
@@ -1300,68 +1268,28 @@ void CommandProcessor::DrawIndirectMulti(uint32_t data_offset, uint32_t max_coun
 	const auto args_size = indexed ? sizeof(DrawIndexedIndirectArgs) : sizeof(DrawIndirectArgs);
 	EXIT_NOT_IMPLEMENTED(stride_in_bytes < args_size);
 
-	for (uint32_t i = 0; i < draw_count; i++) {
-		const auto args_addr = m_draw_indirect_args_base_addr + data_offset +
-		                       static_cast<uint64_t>(i) * stride_in_bytes;
+	const auto vaddr = m_draw_indirect_args_base_addr + data_offset;
+	const auto total_size = static_cast<uint64_t>(draw_count) * stride_in_bytes;
 
-		if (!indexed) {
-			auto* args = reinterpret_cast<const DrawIndirectArgs*>(args_addr);
-			if (args->instance_count != 1u || args->start_vertex_location != 0u ||
-			    args->start_instance_location != 0u) {
-				static std::atomic<uint32_t> log_count {0};
-				if (log_count.fetch_add(1) < 64) {
-					LOGF("\t warning: partial DrawIndirectMulti args[%u]: vertex_count=%" PRIu32
-					     ", instance_count=%" PRIu32 ", start_vertex=%" PRIu32
-					     ", start_instance=%" PRIu32 "\n",
-					     i, args->vertex_count_per_instance, args->instance_count,
-					     args->start_vertex_location, args->start_instance_location);
-				}
-			}
-			DrawIndexAuto(args->vertex_count_per_instance, 0, 0, args->instance_count,
-			              args->start_vertex_location, args->start_instance_location);
-			continue;
-		}
+	auto* command      = CurrentBuffer();
+	auto* host_ctx     = g_render_ctx->GetGraphicCtx();
+	auto* buffer_cache = g_render_ctx->GetBufferCache();
 
-		auto* args = reinterpret_cast<const DrawIndexedIndirectArgs*>(args_addr);
-		if (args->base_vertex_location != 0u || args->start_instance_location != 0u) {
-			static std::atomic<uint32_t> log_count {0};
-			if (log_count.fetch_add(1) < 64) {
-				LOGF("\t warning: partial DrawIndexIndirectMulti args[%u]: index_count=%" PRIu32
-				     ", instance_count=%" PRIu32 ", start_index=%" PRIu32 ", base_vertex=%" PRIu32
-				     ", start_instance=%" PRIu32 "\n",
-				     i, args->index_count_per_instance, args->instance_count,
-				     args->start_index_location, args->base_vertex_location,
-				     args->start_instance_location);
-			}
-		}
+	auto binding = buffer_cache->ObtainBuffer(command, host_ctx, vaddr, total_size);
+	auto* indirect_buffer = binding.first;
+	auto  indirect_offset = binding.second;
 
-		uint64_t index_size = 0;
-		switch (m_index_type_and_size) {
-			case 0: index_size = 2; break;
-			case 1: index_size = 4; break;
-			case 2: index_size = 1; break;
-			default: EXIT("unknown index_type_and_size: %u\n", m_index_type_and_size);
-		}
+	EXIT_IF(indirect_buffer == nullptr);
 
-		auto* index_addr = reinterpret_cast<const void*>(
-		    m_index_base_addr + static_cast<uint64_t>(args->start_index_location) * index_size);
-
-		const uint32_t index_count =
-		    (m_index_buffer_size != 0
-		         ? std::min(args->index_count_per_instance, m_index_buffer_size)
-		         : args->index_count_per_instance);
-		if (GraphicsRunDebugDumpEnabled() && index_count != args->index_count_per_instance) {
-			static std::atomic<uint32_t> log_count {0};
-			if (log_count.fetch_add(1, std::memory_order_relaxed) < 64) {
-				LOGF("\t DrawIndexIndirectMulti: clamped index_count from %" PRIu32 " to %" PRIu32
-				     " using INDEX_BUFFER_SIZE\n",
-				     args->index_count_per_instance, index_count);
-			}
-		}
-
-		DrawIndex(index_count, index_addr, 0, 1, args->instance_count, nullptr, 0,
-		          static_cast<int32_t>(args->base_vertex_location), args->start_instance_location);
+	if (!indexed) {
+		RenderDrawIndirect(m_submit_id, command, &m_ctx, &m_ucfg, &m_sh_ctx, 0, 1,
+		                   indirect_buffer->buffer, indirect_offset, draw_count, stride_in_bytes);
+		return;
 	}
+
+	RenderDrawIndexedIndirect(m_submit_id, command, &m_ctx, &m_ucfg, &m_sh_ctx, m_index_type_and_size,
+	                          reinterpret_cast<const void*>(m_index_base_addr), 0, 1,
+	                          indirect_buffer->buffer, indirect_offset, draw_count, stride_in_bytes);
 }
 
 void CommandProcessor::DispatchDirect(uint32_t thread_group_x, uint32_t thread_group_y,

@@ -9,6 +9,12 @@ a heavily modified version of [Kyty](https://github.com/InoriRus/Kyty). The proj
 stage of development, so compatibility is limited and behavior may change significantly between
 builds.
 
+> [!NOTE]
+> This repository is a personal fork of [KytyPS5](https://github.com/KytyPS5/KytyPS5) containing
+> boot and rendering fixes found while debugging *TMNT: Mutants Unleashed*. See
+> [Fork Changes](#fork-changes) for what differs from upstream, and
+> [Special Thanks](#special-thanks) for the projects those fixes came from.
+
 > [!IMPORTANT]
 > KytyPS5 is not affiliated with Sony Interactive Entertainment or PlayStation. The project does
 > not distribute games or copyrighted system software. Use only game files that you have obtained
@@ -22,6 +28,62 @@ KytyPS5 can boot 2D games and a selection of 3D games, including titles built wi
 Development is focused on compatibility and boot reliability.
 
 Linux support is planned, but Windows is the only supported platform at this time.
+
+## Fork Changes
+
+These changes were made while debugging a Unity (IL2CPP) PS5 title that previously showed only a
+black screen. Each is described with the symptom it fixed so the reasoning can be checked.
+
+**Loader and kernel**
+
+- **64-bit page mask for fault addresses.** `& ~0xFFFU` is a 32-bit constant, so it truncated fault
+  addresses above 4 GB and demand-commit resolved the wrong page. Any first touch above 4 GB then
+  re-faulted forever on the same instruction, pegging one core with no log output.
+- **Chunked demand-commit.** Committing a single 4 KB page per fault turned a conservative
+  garbage collector's heap scan into a multi-minute fault storm; reserved ranges are now committed
+  in bounded chunks.
+- **Guest code runs on the guest stack again.** The stack switch in `RunOnGuestStack` and
+  `RunEntry` had been removed, so Boehm GC derived a scan range spanning gigabytes of unrelated
+  address space.
+- **The access-violation handler no longer allocates in free address space.** Committing memory at
+  arbitrary faulted addresses consumed the address space Unity's flip, EOP and workload thread
+  stacks needed, so those threads failed to start.
+- **Faults and illegal instructions fail loudly.** Instruction-skipping fallbacks silently
+  desynchronised guest state and hid real crashes; they now log the faulting opcode and stop.
+- **POSIX exports return `-1` and set `errno`.** `open`, `close` and `write` were bound to the raw
+  `sceKernel*` entry points, which return an `0x8002xxxx` status. libc callers stored that as a
+  valid descriptor and later dereferenced it.
+- **`sceKernelSyncOnAddressWait`/`Wake` implemented.** Both NIDs previously resolved to one no-op
+  stub. They are a futex-style pair, and Unity's job system busy-spins forever without them.
+- **`strcpy` NID corrected.** `kiZSXIWd9vg` is `strcpy`, not `realloc` (`Y7aJ1uydPMo`). Every guest
+  `strcpy(dest, src)` was executing `realloc(dest, (size_t)src)`: nothing was copied and each call
+  requested a ~143 MB allocation, leaving asset and path strings as garbage. This was the root
+  cause of the "data file is corrupted" boot failure.
+- **`read`/`pread` on directory descriptors** return directory data instead of `EISDIR`.
+
+**Graphics**
+
+- **Depth extent fallbacks.** A depth surface can be bound with valid base addresses but no extent
+  register. The extent is now taken, in order, from `DB_DEPTH_SIZE_XY`, the render-target register
+  blob, the encoded `DB_DEPTH_SIZE` pitch/height, a bound colour target, the viewport transform, or
+  the screen scissor. The viewport case is what unblocked rendering: the guest expresses that
+  extent only as floats, so no integer size register carries it.
+- **Zero-extent depth attachments are dropped** rather than aborting, when the guest has written an
+  explicitly zero size and the real clear is performed by the HTile compute path.
+- **Texture metadata re-registration.** Re-registering metadata at an address with a different
+  surface shape is a reallocation, not a growth, and now replaces the entry instead of aborting.
+- **Depth-target reallocation.** A depth allocation reused for a differently shaped surface is
+  retired, mirroring the existing colour-target path. Depth and stencil contents are ephemeral, so
+  GPU ownership of the range is released rather than written back.
+- **Compute queues share the graphics queue family.** Readback buffers use exclusive sharing, which
+  Vulkan only permits within one family; compute queues previously spilled into a second family.
+
+**Known limitations**
+
+The viewport-derived depth extent is a heuristic. When one depth allocation is shared by passes
+with different viewports it can overestimate the surface size, which surfaces later as a
+texture-cache range conflict. The title above now loads assets, compiles shaders and issues tens of
+thousands of draw calls, but does not yet present a complete frame.
 
 ## Bugs and Issues
 
@@ -184,7 +246,27 @@ licenses included with those components.
 
 ## Special Thanks
 
+- [KytyPS5/KytyPS5](https://github.com/KytyPS5/KytyPS5) — the upstream project this repository is
+  forked from. Everything here is a small delta on top of their work.
 - [InoriRus/Kyty](https://github.com/InoriRus/Kyty) — KytyPS5 is based on a heavily modified version
   of the original Kyty project.
 - [shadps4-emu/shadPS4](https://github.com/shadps4-emu/shadPS4) — reference for memory-model
   understanding and the AVPlayer implementation.
+- [sharpemu/sharpemu](https://github.com/sharpemu/sharpemu) — an experimental PS5 emulator written
+  in C# by par274. Its export tables were used as a cross-reference to verify this fork's NID
+  mappings, which is how three bugs in the list above were found: the `strcpy`/`realloc` mix-up,
+  the POSIX `open`/`close`/`write` error convention, and the fact that
+  `sceKernelSyncOnAddressWait`/`Wake` are a real futex pair rather than a single stub. SharpEmu's
+  `KernelMemoryCompatExports.cs` also documents the null-dereference symptom that a leaked
+  `0x8002xxxx` status produces in Unity's IL2CPP file layer, which matched the crash seen here.
+
+### Tools and references
+
+- The [Vulkan](https://www.vulkan.org/) specification and validation layers.
+- [Capstone](https://www.capstone-engine.org/) — used to disassemble guest code while tracing the
+  Unity boot path.
+- AMD GCN/RDNA register documentation, for the PM4 context registers referenced in
+  `src/graphics/guest_gpu`.
+- Debugging for this fork was carried out with AI assistance (Claude Code); see
+  [AI Use](#ai-use). All changes were built and exercised against a real title before being
+  committed.

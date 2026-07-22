@@ -293,6 +293,8 @@ int KYTY_SYSV_ABI KernelWaitSema(KernelSema sem, int need, KernelUseconds* time)
 		return KERNEL_ERROR_ESRCH;
 	}
 
+	LOGF("\t KernelWaitSema: %s, need=%d\n", sem->GetName().c_str(), need);
+
 	auto result = sem->Wait(need, time);
 
 	int ret = OK;
