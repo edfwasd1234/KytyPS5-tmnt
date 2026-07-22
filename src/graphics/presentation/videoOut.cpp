@@ -17,11 +17,14 @@
 #include "graphics/host_gpu/renderer/textureCache.h"
 #include "graphics/presentation/displayBuffer.h"
 #include "graphics/presentation/window.h"
+#include "kernel/memory.h"
 #include "kernel/pthread.h"
 #include "libs/errno.h"
 #include "libs/libs.h"
 
 #include <algorithm>
+#include <cstdio>
+#include <cstdlib>
 #include <limits>
 #include <list>
 #include <vector>
@@ -763,6 +766,40 @@ bool FlipQueue::Flip(uint32_t micros) {
 	}
 	m_requests.front().state = RequestState::Presenting;
 	m_mutex.Unlock();
+
+	// Debug: dump the guest display buffer for one late frame so the presented bytes can be
+	// inspected outside the emulator (the pages are GPU-protected, so an external reader cannot
+	// see them). Enable with KYTY_DUMP_FLIP=<frame-number>.
+	{
+		static const char*    dump_env   = std::getenv("KYTY_DUMP_FLIP");
+		static const uint64_t dump_frame = (dump_env != nullptr ? std::strtoull(dump_env, nullptr, 10) : 0);
+		static std::atomic<uint64_t> flip_counter {0};
+		const auto                   n = flip_counter.fetch_add(1, std::memory_order_relaxed);
+		if (dump_frame != 0 && n == dump_frame) {
+			auto* ctx = g_video_out_context->Get(1);
+			if (ctx != nullptr && r.index >= 0 && r.index < VIDEO_OUT_BUFFER_NUM_MAX) {
+				const auto  addr = reinterpret_cast<uint64_t>(ctx->buffers[r.index].buffer);
+				const auto  size = ctx->buffers[r.index].buffer_size;
+				std::vector<uint8_t> bytes(size);
+				if (addr != 0 && size != 0 &&
+				    ::Libs::LibKernel::Memory::TryReadBacking(addr, bytes.data(), size)) {
+					if (auto* f = std::fopen("flip_dump.bin", "wb"); f != nullptr) {
+						std::fwrite(bytes.data(), 1, bytes.size(), f);
+						std::fclose(f);
+					}
+					printf("[flip dump] frame %" PRIu64 " index %d addr 0x%016" PRIx64
+					       " size 0x%" PRIx64 " pitch %u -> flip_dump.bin\n",
+					       n, r.index, addr, size, ctx->buffers[r.index].buffer_pitch);
+					fflush(stdout);
+				} else {
+					printf("[flip dump] frame %" PRIu64 " read failed addr=0x%016" PRIx64
+					       " size=0x%" PRIx64 "\n",
+					       n, addr, size);
+					fflush(stdout);
+				}
+			}
+		}
+	}
 
 	Graphics::WindowPresentFrame(r.frame);
 
