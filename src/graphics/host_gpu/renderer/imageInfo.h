@@ -451,9 +451,14 @@ ClassifyBufferImageWrite(uint64_t buffer_address, uint64_t buffer_size, uint64_t
 	const bool page_aligned = ((buffer_address | buffer_size) & (TRACKER_PAGE_SIZE - 1)) == 0;
 	switch (binding) {
 		case BufferImageBinding::Texture:
-			return exact && page_aligned && !image_gpu_modified
-			           ? BufferImageWrite::InvalidateTexture
-			           : BufferImageWrite::Unsupported;
+			// A GPU buffer write that overlaps a sampled texture makes the cached copy stale. When
+			// the texture has no un-persisted GPU content (not gpu_modified), its authoritative
+			// data is guest memory, so invalidating it - even on a partial, page-aligned overlap -
+			// is safe: it re-uploads from the now-updated guest memory (the untouched parts
+			// included). Only an exact overlap was accepted before, which aborted on the partial
+			// overlaps TMNT produces by aliasing a buffer over part of a texture's pages.
+			return page_aligned && !image_gpu_modified ? BufferImageWrite::InvalidateTexture
+			                                           : BufferImageWrite::Unsupported;
 		case BufferImageBinding::VideoOut:
 			return exact && buffer_formatted && !image_gpu_modified
 			           ? BufferImageWrite::InvalidateVideoOut
